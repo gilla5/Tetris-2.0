@@ -1,13 +1,13 @@
 # Tetris-2.0 - Core Engine & Rules
 ============================
 
-Controls:
-  Left / Right   move 
-  Up             rotate clockwise
-  Z              rotate counter-clockwise
-  Down           soft drop (hold)
-  Space          hard drop
-  C              hold piece
-  R              restart after game over
-  Q              quit after game over
+## Controls
 
+| Key | Action |
+|---|---|
+| ↑ Up Arrow | Rotate the piece |
+| ← Left Arrow | Move left |
+| → Right Arrow | Move right |
+| ↓ Down Arrow | Move down faster |
+| Spacebar | Drop the piece instantly |
+| Q | Quit after game over |
