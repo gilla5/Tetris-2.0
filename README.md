@@ -2,7 +2,7 @@
 ============================
 
 Controls:
-  Left / Right   move
+  Left / Right   move /n
   Up             rotate clockwise
   Z              rotate counter-clockwise
   Down           soft drop (hold)
