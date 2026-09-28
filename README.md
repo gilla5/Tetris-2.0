@@ -36,3 +36,5 @@ Core mechanics we need, plus the extras that make it feel great to play.
 - Line-clear and level-up animations
 - Selectable board themes / skins
 - 2-player battle mode
+
+
