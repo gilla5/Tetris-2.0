@@ -339,6 +339,27 @@ def draw_piece(screen, piece):
         pygame.draw.rect(screen, color, (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2))
 
 
+def ghost_cells(board, piece):
+    # Show where the piece is going to fall with ghost colors
+    row = piece.row
+    while board.is_valid(piece.cells()):
+        piece.row += 1
+    piece.row -= 1
+    landed = piece.cells()
+    piece.row = row
+    return landed
+
+
+def draw_ghost(screen, board, piece):
+    color = PIECE_COLORS[piece.kind]
+    for row, col in ghost_cells(board, piece):
+        if row < 0:
+            continue
+        x = BOARD_ORIGIN_X + col * CELL_SIZE
+        y = BOARD_ORIGIN_Y + row * CELL_SIZE
+        pygame.draw.rect(screen, color, (x + 3, y + 3, CELL_SIZE - 6, CELL_SIZE - 6), 2)
+
+
 def draw_mini_piece(screen, kind, box_x, box_y, box_w, box_h):
     """Draw a small, centered preview of a piece's spawn orientation,
     used for both the hold slot and the next-piece queue."""
@@ -437,6 +458,7 @@ def main():
         screen.fill(WHITE)
         draw_board(screen, game.board)
         if game.state == "playing":
+            draw_ghost(screen, game.board, game.piece)
             draw_piece(screen, game.piece)
         draw_hold(screen, font, game)
         draw_next_queue(screen, font, game)
