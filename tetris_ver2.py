@@ -1,5 +1,7 @@
+import json
 import random
 from collections import deque
+from pathlib import Path
 
 import pygame
 
@@ -20,6 +22,11 @@ BLACK = (15, 15, 15)
 WHITE = (245, 245, 245)
 GRAY = (90, 90, 90)
 PANEL_BG = (225, 225, 225)
+
+# High score leaderboard, saved next to this file.
+SCORES_FILE = Path(__file__).with_name("highscores.json")
+LEADERBOARD_SIZE = 5
+HIGHLIGHT = (220, 60, 40)
 
 # Side panels: hold box on the left, next-piece queue on the right.
 NEXT_QUEUE_SIZE = 3
@@ -117,31 +124,6 @@ LINES_PER_LEVEL = 10
 SOFT_DROP_POINTS = 1
 HARD_DROP_POINTS = 2
 
-# ---------------------------------------------------------------------------
-# Bonus features: combos, perfect clears, power-up pieces, wind
-# ---------------------------------------------------------------------------
-COMBO_POINTS = 50            # per extra consecutive clear, multiplied by level
-PERFECT_CLEAR_SCORE = 2000   # multiplied by level, when the board ends up empty
-
-POWERUP_EVERY_LINES = 5      # every N cleared lines, the next piece carries a power-up
-POWERUP_TYPES = ("bomb", "laser", "freeze")
-POWERUP_BLOCK_POINTS = 10    # per locked block destroyed by a bomb or laser
-BOMB_RADIUS = 1              # 1 -> 3x3 blast area
-FREEZE_SECONDS = 5.0
-POWERUP_LETTERS = {"bomb": "B", "laser": "L", "freeze": "F"}
-POWERUP_COLORS = {
-    "bomb": (200, 30, 30),
-    "laser": (230, 120, 0),
-    "freeze": (0, 150, 220),
-}
-
-# Gravity is a (drow, dcol) pair. After a 4-line clear the next piece gets
-# "wind": it is pushed sideways instead of down for that one piece.
-NORMAL_GRAVITY = (1, 0)
-WIND_DIRECTIONS = [(0, 1), (0, -1)]
-WIND_COLOR = (120, 60, 200)
-COMBO_COLOR = (0, 130, 60)
-
 
 def gravity_interval(level):
     """Seconds between automatic downward steps, following the classic
@@ -154,12 +136,10 @@ def gravity_interval(level):
 # Core data structures
 # ---------------------------------------------------------------------------
 class Piece:
-    """A falling tetromino: its type, rotation state, board position, and
-    an optional power-up ("bomb", "laser", "freeze" or None)."""
+    """A falling tetromino: its type, rotation state, and board position."""
 
-    def __init__(self, kind, power=None):
+    def __init__(self, kind):
         self.kind = kind
-        self.power = power
         self.rotation = 0
         box = ROTATION_STATES[kind]["box"]
         self.col = (BOARD_WIDTH - box) // 2
@@ -205,27 +185,6 @@ class Board:
             self.grid = [[None] * self.width for _ in range(cleared)] + remaining
         return cleared
 
-    def is_empty(self):
-        return all(cell is None for row in self.grid for cell in row)
-
-    def top_row(self):
-        """Index of the highest row containing a locked block, or
-        self.height if the board is empty."""
-        for r, row in enumerate(self.grid):
-            if any(cell is not None for cell in row):
-                return r
-        return self.height
-
-    def clear_cells(self, cells):
-        """Empty the given (row, col) cells (out-of-bounds ones are
-        ignored). Returns the list of cells that actually held a block."""
-        removed = []
-        for r, c in cells:
-            if 0 <= r < self.height and 0 <= c < self.width and self.grid[r][c] is not None:
-                self.grid[r][c] = None
-                removed.append((r, c))
-        return removed
-
 
 class SevenBag:
     """Standard 7-bag randomizer: each piece type appears exactly once
@@ -257,13 +216,6 @@ class Game:
         self.state = "playing"
         self._fall_timer = 0.0
 
-        # Bonus-feature state
-        self.combo = 0                 # consecutive locks that cleared lines
-        self.lines_since_powerup = 0   # progress toward the next power-up
-        self.pending_power = None      # power-up the next queued piece will carry
-        self.freeze_timer = 0.0        # seconds of gravity pause remaining
-        self.gravity_dir = NORMAL_GRAVITY
-
         # Next-piece queue: always kept topped up to NEXT_QUEUE_SIZE so the
         # UI can show what's coming without consuming it.
         self.next_queue = deque()
@@ -272,7 +224,6 @@ class Game:
         # Hold piece: starts empty; can_hold prevents hold/un-hold being
         # chained more than once per piece (the standard guideline rule).
         self.hold_kind = None
-        self.hold_power = None
         self.can_hold = True
 
         self._spawn_piece()
@@ -281,52 +232,25 @@ class Game:
         while len(self.next_queue) < NEXT_QUEUE_SIZE:
             self.next_queue.append(self.bag.next_piece())
 
-    def _spawn_piece(self, kind=None, power=None, wind=False):
+    def _spawn_piece(self, kind=None):
         if kind is None:
-            # Fresh piece from the queue: it picks up any pending power-up.
             kind = self.next_queue.popleft()
             self._refill_queue()
-            power = self.pending_power
-            self.pending_power = None
-        self.piece = Piece(kind, power)
-        self.gravity_dir = NORMAL_GRAVITY
-        if wind:
-            self._apply_wind()
+        self.piece = Piece(kind)
         if not self.board.is_valid(self.piece.cells()):
             self.state = "gameover"
 
-    def _apply_wind(self):
-        """Try to push the freshly spawned piece sideways. It starts on one
-        wall, just above the stack, and slides toward the opposite wall.
-        If there is no room (stack too tall), the piece falls normally."""
-        drow, dcol = random.choice(WIND_DIRECTIONS)
-        box = ROTATION_STATES[self.piece.kind]["box"]
-        spawn_row = self.board.top_row() - box
-        if spawn_row < 0:
-            return
-        spawn_col = 0 if dcol > 0 else self.board.width - box
-        original = (self.piece.row, self.piece.col)
-        self.piece.row, self.piece.col = spawn_row, spawn_col
-        if self.board.is_valid(self.piece.cells()):
-            self.gravity_dir = (drow, dcol)
-        else:
-            self.piece.row, self.piece.col = original
-
     def hold(self):
         """Swap the active piece into the hold slot. Only one hold is
-        allowed per piece, reset when the active piece locks. Disabled
-        while the piece is being blown sideways. A held piece keeps its
-        power-up."""
+        allowed per piece, reset when the active piece locks."""
         if self.state != "playing" or not self.can_hold:
             return
-        if self.gravity_dir != NORMAL_GRAVITY:
-            return
-        current_kind, current_power = self.piece.kind, self.piece.power
+        current_kind = self.piece.kind
         if self.hold_kind is None:
             self._spawn_piece()
         else:
-            self._spawn_piece(kind=self.hold_kind, power=self.hold_power)
-        self.hold_kind, self.hold_power = current_kind, current_power
+            self._spawn_piece(kind=self.hold_kind)
+        self.hold_kind = current_kind
         self.can_hold = False
 
     def move(self, dcol, drow):
@@ -359,96 +283,63 @@ class Game:
     def soft_drop(self):
         if self.state != "playing":
             return
-        if self.gravity_dir != NORMAL_GRAVITY:
-            # Wind: DOWN just steers the piece down; wind (or hard drop)
-            # is what locks it.
-            self.move(0, 1)
-            return
         if self.move(0, 1):
             self.score += SOFT_DROP_POINTS
         else:
             self._lock_active_piece()
 
     def hard_drop(self):
-        """Slide the piece along its gravity direction until it stops."""
         if self.state != "playing":
             return
-        drow, dcol = self.gravity_dir
         dropped = 0
-        while self.move(dcol, drow):
+        while self.move(0, 1):
             dropped += 1
         self.score += dropped * HARD_DROP_POINTS
         self._lock_active_piece()
 
     def update(self, dt):
-        """Advance gravity by dt seconds (paused while frozen)."""
+        """Advance gravity by dt seconds."""
         if self.state != "playing":
-            return
-        if self.freeze_timer > 0:
-            self.freeze_timer = max(0.0, self.freeze_timer - dt)
             return
         self._fall_timer += dt
         if self._fall_timer >= gravity_interval(self.level):
             self._fall_timer = 0.0
-            drow, dcol = self.gravity_dir
-            if not self.move(dcol, drow):
+            if not self.move(0, 1):
                 self._lock_active_piece()
 
-    def _apply_powerup(self, piece):
-        """Fire the locked piece's power-up, if it has one. The anchor is
-        the piece's lowest cell, which is also where the 'B'/'L'/'F'
-        marker is drawn."""
-        if piece.power is None:
-            return
-        own = set(piece.cells())
-        anchor_row, anchor_col = max(piece.cells(), key=lambda rc: rc[0])
-        targets = []
-        if piece.power == "bomb":
-            targets = [
-                (r, c)
-                for r in range(anchor_row - BOMB_RADIUS, anchor_row + BOMB_RADIUS + 1)
-                for c in range(anchor_col - BOMB_RADIUS, anchor_col + BOMB_RADIUS + 1)
-            ]
-        elif piece.power == "laser":
-            targets = [(r, anchor_col) for r in range(self.board.height)]
-        elif piece.power == "freeze":
-            self.freeze_timer = FREEZE_SECONDS
-        removed = self.board.clear_cells(targets)
-        # Only reward blocks that were already on the board, not the piece itself.
-        self.score += sum(1 for cell in removed if cell not in own) * POWERUP_BLOCK_POINTS
-
     def _lock_active_piece(self):
-        piece = self.piece
-        self.board.lock(piece)
-        self._apply_powerup(piece)
-
+        self.board.lock(self.piece)
         cleared = self.board.clear_lines()
         if cleared:
-            self.combo += 1
             self.lines_cleared += cleared
-            self.lines_since_powerup += cleared
             self.score += LINE_CLEAR_SCORE[cleared] * self.level
-            if self.combo > 1:
-                self.score += COMBO_POINTS * (self.combo - 1) * self.level
             self.level = 1 + self.lines_cleared // LINES_PER_LEVEL
-            if self.lines_since_powerup >= POWERUP_EVERY_LINES:
-                self.lines_since_powerup -= POWERUP_EVERY_LINES
-                self.pending_power = random.choice(POWERUP_TYPES)
-        else:
-            self.combo = 0
-
-        if self.board.is_empty():
-            self.score += PERFECT_CLEAR_SCORE * self.level
-
         self.can_hold = True
-        self._fall_timer = 0.0
-        self._spawn_piece(wind=(cleared == 4))
+        self._spawn_piece()
 
 
 # ---------------------------------------------------------------------------
 # Rendering (thin - the classes above have no pygame dependency in their
 # logic, only this section touches the screen)
 # ---------------------------------------------------------------------------
+def _shade(color, amount):
+    """Lighten (amount > 0) or darken (amount < 0) an RGB color."""
+    return tuple(max(0, min(255, c + amount)) for c in color)
+
+
+def draw_cell(screen, x, y, size, color):
+    """Draw one block with a light top/left edge and a dark bottom/right
+    edge. Every block (board, active piece, previews) goes through here."""
+    pygame.draw.rect(screen, color, (x + 1, y + 1, size - 2, size - 2))
+    edge = max(2, size // 8)
+    light = _shade(color, 60)
+    dark = _shade(color, -70)
+    pygame.draw.rect(screen, light, (x + 1, y + 1, size - 2, edge))
+    pygame.draw.rect(screen, light, (x + 1, y + 1, edge, size - 2))
+    pygame.draw.rect(screen, dark, (x + 1, y + size - 1 - edge, size - 2, edge))
+    pygame.draw.rect(screen, dark, (x + size - 1 - edge, y + 1, edge, size - 2))
+
+
 def draw_board(screen, board):
     for row in range(board.height):
         for col in range(board.width):
@@ -457,51 +348,33 @@ def draw_board(screen, board):
             pygame.draw.rect(screen, GRAY, (x, y, CELL_SIZE, CELL_SIZE), 1)
             kind = board.grid[row][col]
             if kind:
-                pygame.draw.rect(
-                    screen, PIECE_COLORS[kind],
-                    (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2),
-                )
+                draw_cell(screen, x, y, CELL_SIZE, PIECE_COLORS[kind])
 
 
-def draw_piece(screen, piece, small_font):
+def draw_piece(screen, piece):
     color = PIECE_COLORS[piece.kind]
-    cells = piece.cells()
-    # Power-up pieces get a black border, and a lettered marker on the
-    # anchor (lowest) cell, which is where the effect will fire.
-    anchor = max(cells, key=lambda rc: rc[0]) if piece.power else None
-    for row, col in cells:
+    for row, col in piece.cells():
         if row < 0:
             continue
         x = BOARD_ORIGIN_X + col * CELL_SIZE
         y = BOARD_ORIGIN_Y + row * CELL_SIZE
-        pygame.draw.rect(screen, color, (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2))
-        if piece.power:
-            pygame.draw.rect(screen, BLACK, (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2), 3)
-            if (row, col) == anchor:
-                pygame.draw.rect(screen, WHITE, (x + 4, y + 4, CELL_SIZE - 8, CELL_SIZE - 8))
-                letter = small_font.render(
-                    POWERUP_LETTERS[piece.power], True, POWERUP_COLORS[piece.power]
-                )
-                screen.blit(letter, letter.get_rect(center=(x + CELL_SIZE // 2, y + CELL_SIZE // 2)))
+        draw_cell(screen, x, y, CELL_SIZE, color)
 
 
-def ghost_cells(board, piece, gravity=NORMAL_GRAVITY):
-    # Show where the piece will end up if it keeps moving along gravity
-    drow, dcol = gravity
-    start_row, start_col = piece.row, piece.col
+def ghost_cells(board, piece):
+    # Show where the piece is going to fall with ghost colors
+    row = piece.row
     while board.is_valid(piece.cells()):
-        piece.row += drow
-        piece.col += dcol
-    piece.row -= drow
-    piece.col -= dcol
+        piece.row += 1
+    piece.row -= 1
     landed = piece.cells()
-    piece.row, piece.col = start_row, start_col
+    piece.row = row
     return landed
 
 
-def draw_ghost(screen, board, piece, gravity=NORMAL_GRAVITY):
+def draw_ghost(screen, board, piece):
     color = PIECE_COLORS[piece.kind]
-    for row, col in ghost_cells(board, piece, gravity):
+    for row, col in ghost_cells(board, piece):
         if row < 0:
             continue
         x = BOARD_ORIGIN_X + col * CELL_SIZE
@@ -521,7 +394,7 @@ def draw_mini_piece(screen, kind, box_x, box_y, box_w, box_h):
     for r, c in cells:
         x = offset_x + c * PREVIEW_CELL
         y = offset_y + r * PREVIEW_CELL
-        pygame.draw.rect(screen, color, (x + 1, y + 1, PREVIEW_CELL - 2, PREVIEW_CELL - 2))
+        draw_cell(screen, x, y, PREVIEW_CELL, color)
 
 
 def draw_panel_slot(screen, rect, label, font, kind=None):
@@ -535,27 +408,6 @@ def draw_panel_slot(screen, rect, label, font, kind=None):
 
 def draw_hold(screen, font, game):
     draw_panel_slot(screen, HOLD_BOX, "HOLD", font, game.hold_kind)
-    if game.hold_power:
-        label = font.render(game.hold_power.upper(), True, POWERUP_COLORS[game.hold_power])
-        screen.blit(label, (HOLD_BOX[0] + 6, HOLD_BOX[1] + HOLD_BOX[3] + 4))
-
-
-def draw_status(screen, font, game):
-    """Combo, queued power-up, freeze timer and wind indicators, drawn
-    below the score/level/lines block."""
-    lines = []
-    if game.combo >= 2:
-        lines.append((f"Combo x{game.combo}", COMBO_COLOR))
-    if game.pending_power:
-        lines.append((f"Next: {game.pending_power.upper()}", POWERUP_COLORS[game.pending_power]))
-    if game.freeze_timer > 0:
-        lines.append((f"FROZEN {game.freeze_timer:.1f}s", POWERUP_COLORS["freeze"]))
-    if game.gravity_dir != NORMAL_GRAVITY:
-        arrows = ">>>" if game.gravity_dir[1] > 0 else "<<<"
-        lines.append((f"WIND {arrows}", WIND_COLOR))
-    start_y = HOLD_BOX[1] + HOLD_BOX[3] + 30 + 3 * 26 + 10
-    for i, (text, color) in enumerate(lines):
-        screen.blit(font.render(text, True, color), (HOLD_BOX[0], start_y + i * 26))
 
 
 def draw_next_queue(screen, font, game):
@@ -570,11 +422,61 @@ def draw_hud(screen, font, game):
         screen.blit(font.render(line, True, BLACK), (HOLD_BOX[0], HOLD_BOX[1] + HOLD_BOX[3] + 30 + i * 26))
 
 
+def load_scores(path=SCORES_FILE):
+    """Top scores from the file, highest first. A missing or broken file
+    just means no scores yet."""
+    try:
+        with open(path) as f:
+            scores = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(scores, list):
+        return []
+    scores = [s for s in scores if isinstance(s, int) and not isinstance(s, bool)]
+    return sorted(scores, reverse=True)[:LEADERBOARD_SIZE]
+
+
+def save_score(score, path=SCORES_FILE):
+    """Add a score to the file and return the new top list. A score of 0
+    is not saved."""
+    scores = load_scores(path)
+    if score > 0:
+        scores = sorted(scores + [score], reverse=True)[:LEADERBOARD_SIZE]
+        try:
+            with open(path, "w") as f:
+                json.dump(scores, f)
+        except OSError:
+            pass
+    return scores
+
+
+def draw_leaderboard(screen, font, scores, highlight=None):
+    """Top scores under the game over text. highlight is the index of the
+    score that was just earned, shown in red."""
+    center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
+    top = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2 + 70
+    heading = font.render("HIGH SCORES", True, BLACK)
+    screen.blit(heading, heading.get_rect(center=(center_x, top)))
+    if not scores:
+        line = font.render("No scores yet", True, GRAY)
+        screen.blit(line, line.get_rect(center=(center_x, top + 30)))
+        return
+    for i, score in enumerate(scores):
+        color = HIGHLIGHT if i == highlight else BLACK
+        line = font.render(f"{i + 1}.  {score}", True, color)
+        screen.blit(line, line.get_rect(center=(center_x, top + 30 + i * 24)))
+
+
 def draw_game_over(screen, big_font, small_font):
     board_center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     board_center_y = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2
 
-    title = big_font.render("GAME OVER", True, (220, 60, 40))
+    panel = pygame.Rect(0, 0, BOARD_WIDTH * CELL_SIZE + 40, 320)
+    panel.center = (board_center_x, board_center_y + 60)
+    pygame.draw.rect(screen, PANEL_BG, panel)
+    pygame.draw.rect(screen, GRAY, panel, 2)
+
+    title = big_font.render("GAME OVER", True, HIGHLIGHT)
     subtitle = small_font.render("R to restart  -  Q to quit", True, BLACK)
     screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 20)))
     screen.blit(subtitle, subtitle.get_rect(center=(board_center_x, board_center_y + 30)))
@@ -587,10 +489,11 @@ def main():
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Calibri", 22, True)
     big_font = pygame.font.SysFont("Calibri", 46, True)
-    small_font = pygame.font.SysFont("Calibri", 18, True)
 
     game = Game()
     soft_dropping = False
+    scores = None
+    highlight = None
     running = True
 
     while running:
@@ -616,6 +519,7 @@ def main():
                     soft_dropping = True
                 elif event.key == pygame.K_r and game.state == "gameover":
                     game = Game()
+                    scores = None
                 elif event.key == pygame.K_q and game.state == "gameover":
                     running = False
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
@@ -626,17 +530,21 @@ def main():
                 game.soft_drop()
             game.update(dt)
 
+        if game.state == "gameover" and scores is None:
+            scores = save_score(game.score)
+            highlight = scores.index(game.score) if game.score in scores else None
+
         screen.fill(WHITE)
         draw_board(screen, game.board)
         if game.state == "playing":
-            draw_ghost(screen, game.board, game.piece, game.gravity_dir)
-            draw_piece(screen, game.piece, small_font)
+            draw_ghost(screen, game.board, game.piece)
+            draw_piece(screen, game.piece)
         draw_hold(screen, font, game)
         draw_next_queue(screen, font, game)
         draw_hud(screen, font, game)
-        draw_status(screen, font, game)
         if game.state == "gameover":
             draw_game_over(screen, big_font, font)
+            draw_leaderboard(screen, font, scores, highlight)
 
         pygame.display.flip()
 
