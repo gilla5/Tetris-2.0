@@ -10,6 +10,7 @@
 | → Right Arrow | Move right |
 | ↓ Down Arrow | Move down faster |
 | Spacebar | Drop the piece instantly |
+<<<<<<< HEAD
 | R | Restart after game over (or click **Restart**) |
 | L | Sign out after game over (or click **Sign Out**) |
 | Q | Quit after game over (or click **Quit**) |
@@ -41,6 +42,18 @@ Each player's top 5 scores are saved to `scores/<username>.json` next to the gam
 ## Tests
 
 `python3 -m unittest test_tetris_render test_tetris_auth`
+=======
+| Q | Quit after game over |
+
+
+## High Scores
+
+The top 5 scores are saved to `highscores.json` next to the game. They show on the game over screen. The file is not tracked by git.
+
+## Tests
+
+`python3 -m unittest test_tetris_render`
+>>>>>>> origin/main
 
 # Feature Set
 
@@ -65,4 +78,9 @@ Core mechanics we need, plus the extras that make it feel great to play.
 - Line-clear and level-up animations
 - Selectable board themes / skins
 - 2-player battle mode
+<<<<<<< HEAD
 - User accounts (login, create account, per-player high scores)
+=======
+
+
+>>>>>>> origin/main
