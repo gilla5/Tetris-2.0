@@ -13,6 +13,14 @@
 | Q | Quit after game over |
 
 
+## High Scores
+
+The top 5 scores are saved to `highscores.json` next to the game. They show on the game over screen. The file is not tracked by git.
+
+## Tests
+
+`python3 -m unittest test_tetris_render`
+
 # Feature Set
 
 Core mechanics we need, plus the extras that make it feel great to play.

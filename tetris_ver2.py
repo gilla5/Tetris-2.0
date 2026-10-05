@@ -1,5 +1,7 @@
+import json
 import random
 from collections import deque
+from pathlib import Path
 
 import pygame
 
@@ -20,6 +22,11 @@ BLACK = (15, 15, 15)
 WHITE = (245, 245, 245)
 GRAY = (90, 90, 90)
 PANEL_BG = (225, 225, 225)
+
+# High score leaderboard, saved next to this file.
+SCORES_FILE = Path(__file__).with_name("highscores.json")
+LEADERBOARD_SIZE = 5
+HIGHLIGHT = (220, 60, 40)
 
 # Side panels: hold box on the left, next-piece queue on the right.
 NEXT_QUEUE_SIZE = 3
@@ -315,6 +322,24 @@ class Game:
 # Rendering (thin - the classes above have no pygame dependency in their
 # logic, only this section touches the screen)
 # ---------------------------------------------------------------------------
+def _shade(color, amount):
+    """Lighten (amount > 0) or darken (amount < 0) an RGB color."""
+    return tuple(max(0, min(255, c + amount)) for c in color)
+
+
+def draw_cell(screen, x, y, size, color):
+    """Draw one block with a light top/left edge and a dark bottom/right
+    edge. Every block (board, active piece, previews) goes through here."""
+    pygame.draw.rect(screen, color, (x + 1, y + 1, size - 2, size - 2))
+    edge = max(2, size // 8)
+    light = _shade(color, 60)
+    dark = _shade(color, -70)
+    pygame.draw.rect(screen, light, (x + 1, y + 1, size - 2, edge))
+    pygame.draw.rect(screen, light, (x + 1, y + 1, edge, size - 2))
+    pygame.draw.rect(screen, dark, (x + 1, y + size - 1 - edge, size - 2, edge))
+    pygame.draw.rect(screen, dark, (x + size - 1 - edge, y + 1, edge, size - 2))
+
+
 def draw_board(screen, board):
     for row in range(board.height):
         for col in range(board.width):
@@ -323,10 +348,7 @@ def draw_board(screen, board):
             pygame.draw.rect(screen, GRAY, (x, y, CELL_SIZE, CELL_SIZE), 1)
             kind = board.grid[row][col]
             if kind:
-                pygame.draw.rect(
-                    screen, PIECE_COLORS[kind],
-                    (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2),
-                )
+                draw_cell(screen, x, y, CELL_SIZE, PIECE_COLORS[kind])
 
 
 def draw_piece(screen, piece):
@@ -336,7 +358,7 @@ def draw_piece(screen, piece):
             continue
         x = BOARD_ORIGIN_X + col * CELL_SIZE
         y = BOARD_ORIGIN_Y + row * CELL_SIZE
-        pygame.draw.rect(screen, color, (x + 1, y + 1, CELL_SIZE - 2, CELL_SIZE - 2))
+        draw_cell(screen, x, y, CELL_SIZE, color)
 
 
 def ghost_cells(board, piece):
@@ -372,7 +394,7 @@ def draw_mini_piece(screen, kind, box_x, box_y, box_w, box_h):
     for r, c in cells:
         x = offset_x + c * PREVIEW_CELL
         y = offset_y + r * PREVIEW_CELL
-        pygame.draw.rect(screen, color, (x + 1, y + 1, PREVIEW_CELL - 2, PREVIEW_CELL - 2))
+        draw_cell(screen, x, y, PREVIEW_CELL, color)
 
 
 def draw_panel_slot(screen, rect, label, font, kind=None):
@@ -400,11 +422,61 @@ def draw_hud(screen, font, game):
         screen.blit(font.render(line, True, BLACK), (HOLD_BOX[0], HOLD_BOX[1] + HOLD_BOX[3] + 30 + i * 26))
 
 
+def load_scores(path=SCORES_FILE):
+    """Top scores from the file, highest first. A missing or broken file
+    just means no scores yet."""
+    try:
+        with open(path) as f:
+            scores = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(scores, list):
+        return []
+    scores = [s for s in scores if isinstance(s, int) and not isinstance(s, bool)]
+    return sorted(scores, reverse=True)[:LEADERBOARD_SIZE]
+
+
+def save_score(score, path=SCORES_FILE):
+    """Add a score to the file and return the new top list. A score of 0
+    is not saved."""
+    scores = load_scores(path)
+    if score > 0:
+        scores = sorted(scores + [score], reverse=True)[:LEADERBOARD_SIZE]
+        try:
+            with open(path, "w") as f:
+                json.dump(scores, f)
+        except OSError:
+            pass
+    return scores
+
+
+def draw_leaderboard(screen, font, scores, highlight=None):
+    """Top scores under the game over text. highlight is the index of the
+    score that was just earned, shown in red."""
+    center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
+    top = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2 + 70
+    heading = font.render("HIGH SCORES", True, BLACK)
+    screen.blit(heading, heading.get_rect(center=(center_x, top)))
+    if not scores:
+        line = font.render("No scores yet", True, GRAY)
+        screen.blit(line, line.get_rect(center=(center_x, top + 30)))
+        return
+    for i, score in enumerate(scores):
+        color = HIGHLIGHT if i == highlight else BLACK
+        line = font.render(f"{i + 1}.  {score}", True, color)
+        screen.blit(line, line.get_rect(center=(center_x, top + 30 + i * 24)))
+
+
 def draw_game_over(screen, big_font, small_font):
     board_center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     board_center_y = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2
 
-    title = big_font.render("GAME OVER", True, (220, 60, 40))
+    panel = pygame.Rect(0, 0, BOARD_WIDTH * CELL_SIZE + 40, 320)
+    panel.center = (board_center_x, board_center_y + 60)
+    pygame.draw.rect(screen, PANEL_BG, panel)
+    pygame.draw.rect(screen, GRAY, panel, 2)
+
+    title = big_font.render("GAME OVER", True, HIGHLIGHT)
     subtitle = small_font.render("R to restart  -  Q to quit", True, BLACK)
     screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 20)))
     screen.blit(subtitle, subtitle.get_rect(center=(board_center_x, board_center_y + 30)))
@@ -420,6 +492,8 @@ def main():
 
     game = Game()
     soft_dropping = False
+    scores = None
+    highlight = None
     running = True
 
     while running:
@@ -445,6 +519,7 @@ def main():
                     soft_dropping = True
                 elif event.key == pygame.K_r and game.state == "gameover":
                     game = Game()
+                    scores = None
                 elif event.key == pygame.K_q and game.state == "gameover":
                     running = False
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
@@ -454,6 +529,10 @@ def main():
             if soft_dropping:
                 game.soft_drop()
             game.update(dt)
+
+        if game.state == "gameover" and scores is None:
+            scores = save_score(game.score)
+            highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
         draw_board(screen, game.board)
@@ -465,6 +544,7 @@ def main():
         draw_hud(screen, font, game)
         if game.state == "gameover":
             draw_game_over(screen, big_font, font)
+            draw_leaderboard(screen, font, scores, highlight)
 
         pygame.display.flip()
 
