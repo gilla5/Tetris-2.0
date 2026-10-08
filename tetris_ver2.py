@@ -1,7 +1,11 @@
+<<<<<<< HEAD
 import hashlib
 import hmac
 import json
 import os
+=======
+import json
+>>>>>>> origin/main
 import random
 import re
 import secrets
@@ -33,6 +37,7 @@ SCORES_FILE = Path(__file__).with_name("highscores.json")
 LEADERBOARD_SIZE = 5
 HIGHLIGHT = (220, 60, 40)
 
+<<<<<<< HEAD
 # User accounts. Accounts are saved in users.json, and each player gets their
 # own high score file in the scores folder. Both live next to this file.
 USERS_FILE = Path(__file__).with_name("users.json")
@@ -45,6 +50,8 @@ MAX_PASSWORD_LEN = 64
 PBKDF2_ITERATIONS = 600_000
 SALT_BYTES = 16
 
+=======
+>>>>>>> origin/main
 # Side panels: hold box on the left, next-piece queue on the right.
 NEXT_QUEUE_SIZE = 3
 PREVIEW_CELL = 18
@@ -474,7 +481,10 @@ def save_score(score, path=SCORES_FILE):
     if score > 0:
         scores = sorted(scores + [score], reverse=True)[:LEADERBOARD_SIZE]
         try:
+<<<<<<< HEAD
             Path(path).parent.mkdir(parents=True, exist_ok=True)
+=======
+>>>>>>> origin/main
             with open(path, "w") as f:
                 json.dump(scores, f)
         except OSError:
@@ -482,6 +492,7 @@ def save_score(score, path=SCORES_FILE):
     return scores
 
 
+<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # User accounts (no pygame needed for any of this)
 #
@@ -740,11 +751,18 @@ class LoginScreen:
 
 
 def draw_leaderboard(screen, font, scores, highlight=None, title="HIGH SCORES"):
+=======
+def draw_leaderboard(screen, font, scores, highlight=None):
+>>>>>>> origin/main
     """Top scores under the game over text. highlight is the index of the
     score that was just earned, shown in red."""
     center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     top = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2 + 70
+<<<<<<< HEAD
     heading = font.render(title, True, BLACK)
+=======
+    heading = font.render("HIGH SCORES", True, BLACK)
+>>>>>>> origin/main
     screen.blit(heading, heading.get_rect(center=(center_x, top)))
     if not scores:
         line = font.render("No scores yet", True, GRAY)
@@ -756,6 +774,7 @@ def draw_leaderboard(screen, font, scores, highlight=None, title="HIGH SCORES"):
         screen.blit(line, line.get_rect(center=(center_x, top + 30 + i * 24)))
 
 
+<<<<<<< HEAD
 def draw_button(screen, font, rect, label, mouse_pos, primary=False):
     """A clickable button. It darkens a little while the mouse is over it."""
     x, y, w, h = rect
@@ -780,6 +799,8 @@ def draw_session_panel(screen, font, user):
     draw_button(screen, font, SIGN_OUT_BUTTON, "Sign Out", pygame.mouse.get_pos())
 
 
+=======
+>>>>>>> origin/main
 def draw_game_over(screen, big_font, small_font):
     board_center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     board_center_y = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2
@@ -790,6 +811,10 @@ def draw_game_over(screen, big_font, small_font):
     pygame.draw.rect(screen, GRAY, panel, 2)
 
     title = big_font.render("GAME OVER", True, HIGHLIGHT)
+<<<<<<< HEAD
+=======
+    subtitle = small_font.render("R to restart  -  Q to quit", True, BLACK)
+>>>>>>> origin/main
     screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 20)))
 
     labels = {"restart": "Restart", "sign_out": "Sign Out", "quit": "Quit"}
@@ -878,6 +903,10 @@ def play(screen, clock, font, big_font, user):
     soft_dropping = False
     scores = None
     highlight = None
+<<<<<<< HEAD
+=======
+    running = True
+>>>>>>> origin/main
 
     while True:
         dt = clock.tick(FPS) / 1000.0
@@ -916,8 +945,11 @@ def play(screen, clock, font, big_font, user):
                 elif event.key == pygame.K_r and game.state == "gameover":
                     game = Game()
                     scores = None
+<<<<<<< HEAD
                 elif event.key == pygame.K_l and game.state == "gameover":
                     return "logout"
+=======
+>>>>>>> origin/main
                 elif event.key == pygame.K_q and game.state == "gameover":
                     return "quit"
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
@@ -929,7 +961,11 @@ def play(screen, clock, font, big_font, user):
             game.update(dt)
 
         if game.state == "gameover" and scores is None:
+<<<<<<< HEAD
             scores = save_score(game.score, score_file)
+=======
+            scores = save_score(game.score)
+>>>>>>> origin/main
             highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
@@ -943,7 +979,11 @@ def play(screen, clock, font, big_font, user):
         draw_session_panel(screen, font, user)
         if game.state == "gameover":
             draw_game_over(screen, big_font, font)
+<<<<<<< HEAD
             draw_leaderboard(screen, font, scores, highlight, title="YOUR HIGH SCORES")
+=======
+            draw_leaderboard(screen, font, scores, highlight)
+>>>>>>> origin/main
 
         pygame.display.flip()
 
