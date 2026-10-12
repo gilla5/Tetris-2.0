@@ -23,6 +23,8 @@ WHITE = (245, 245, 245)
 GRAY = (90, 90, 90)
 PANEL_BG = (225, 225, 225)
 
+CLEAR_FLASH = (255, 255, 255)  # the line clear blink, the same in every theme
+
 # High score leaderboard, saved next to this file.
 SCORES_FILE = Path(__file__).with_name("highscores.json")
 LEADERBOARD_SIZE = 5
@@ -50,6 +52,67 @@ PIECE_COLORS = {
     "J": (0, 0, 240),
     "L": (240, 160, 0),
 }
+
+# ---------------------------------------------------------------------------
+# Board themes
+#
+# The color names above are really roles: WHITE is the background, BLACK is
+# the text, GRAY is the grid and borders, and PANEL_BG is the side panels.
+# apply_theme() changes them (and PIECE_COLORS) in place, so every draw
+# function picks up the new colors with no other changes.
+# ---------------------------------------------------------------------------
+THEMES = [
+    {
+        "name": "Classic",
+        "background": WHITE, "text": BLACK, "grid": GRAY, "panel": PANEL_BG,
+        "pieces": dict(PIECE_COLORS),
+    },
+    {
+        "name": "Dark",
+        "background": (20, 20, 28), "text": (235, 235, 235),
+        "grid": (60, 60, 75), "panel": (40, 40, 55),
+        "pieces": {
+            "I": (0, 230, 255), "O": (255, 225, 60), "T": (190, 90, 255),
+            "S": (80, 230, 100), "Z": (255, 80, 90), "J": (80, 120, 255),
+            "L": (255, 160, 50),
+        },
+    },
+    {
+        "name": "Pastel",
+        "background": (252, 246, 240), "text": (80, 70, 90),
+        "grid": (220, 210, 205), "panel": (240, 230, 235),
+        "pieces": {
+            "I": (150, 222, 224), "O": (250, 230, 150), "T": (200, 170, 230),
+            "S": (170, 225, 170), "Z": (245, 170, 170), "J": (160, 180, 240),
+            "L": (250, 200, 150),
+        },
+    },
+    {
+        "name": "Retro",
+        "background": (181, 201, 129), "text": (15, 56, 15),
+        "grid": (139, 172, 15), "panel": (155, 188, 100),
+        "pieces": {
+            "I": (15, 56, 15), "O": (48, 98, 48), "T": (15, 56, 15),
+            "S": (48, 98, 48), "Z": (15, 56, 15), "J": (48, 98, 48),
+            "L": (15, 56, 15),
+        },
+    },
+]
+theme_index = 0
+
+
+def apply_theme(index):
+    """Switch to THEMES[index] (wraps around). Returns the theme name."""
+    global WHITE, BLACK, GRAY, PANEL_BG, theme_index
+    theme_index = index % len(THEMES)
+    theme = THEMES[theme_index]
+    WHITE = theme["background"]
+    BLACK = theme["text"]
+    GRAY = theme["grid"]
+    PANEL_BG = theme["panel"]
+    PIECE_COLORS.update(theme["pieces"])
+    return theme["name"]
+
 
 # ---------------------------------------------------------------------------
 # Piece shapes
@@ -404,7 +467,7 @@ def clear_cell_color(color, col, width, progress):
         if abs(col - (width - 1) / 2) < reach:
             return None
     if int(progress * CLEAR_BLINKS * 2) % 2 == 0:
-        return WHITE
+        return CLEAR_FLASH
     return color
 
 
@@ -500,7 +563,8 @@ def draw_next_queue(screen, font, game):
 
 
 def draw_hud(screen, font, game):
-    lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}"]
+    lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}",
+             f"Theme: {THEMES[theme_index]['name']}"]
     for i, line in enumerate(lines):
         screen.blit(font.render(line, True, BLACK), (HOLD_BOX[0], HOLD_BOX[1] + HOLD_BOX[3] + 30 + i * 26))
 
@@ -615,6 +679,8 @@ def main():
                     game.hold()
                 elif event.key == pygame.K_DOWN:
                     soft_dropping = True
+                elif event.key == pygame.K_t:
+                    apply_theme(theme_index + 1)
                 elif event.key in (pygame.K_p, pygame.K_ESCAPE):
                     game.toggle_pause()
                 elif event.key == pygame.K_r and game.state in ("gameover", "paused"):

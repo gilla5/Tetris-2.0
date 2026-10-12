@@ -12,6 +12,7 @@
 | Spacebar | Drop the piece instantly |
 | Z | Rotate the other way |
 | C | Hold the piece |
+| T | Change the board theme (Classic, Dark, Pastel, Retro) |
 | P or Esc | Pause and resume |
 | R | Restart (when paused or after game over) |
 | Q | Quit (when paused or after game over) |

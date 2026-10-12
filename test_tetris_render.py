@@ -237,7 +237,7 @@ class ClearColorTests(unittest.TestCase):
     def test_row_blinks_white_then_color(self):
         first = t.clear_cell_color(self.color, 0, 10, 0.01)
         second = t.clear_cell_color(self.color, 0, 10, 0.2)
-        self.assertEqual(first, t.WHITE)
+        self.assertEqual(first, t.CLEAR_FLASH)
         self.assertEqual(second, self.color)
 
     def test_middle_vanishes_before_the_edges(self):
@@ -266,6 +266,63 @@ class ClearColorTests(unittest.TestCase):
         t.draw_level_up(screen, font, 2, t.LEVEL_UP_SECONDS)
         white = pygame.mask.from_threshold(screen, t.WHITE, (1, 1, 1, 255)).count()
         self.assertLess(white, t.WINDOW_SIZE[0] * t.WINDOW_SIZE[1])
+
+
+class ThemeTests(unittest.TestCase):
+    def tearDown(self):
+        t.apply_theme(0)
+
+    def test_theme_names_are_unique(self):
+        names = [theme["name"] for theme in t.THEMES]
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_every_theme_has_all_roles_and_pieces(self):
+        for theme in t.THEMES:
+            for role in ("background", "text", "grid", "panel"):
+                self.assertEqual(len(theme[role]), 3, theme["name"])
+            self.assertEqual(set(theme["pieces"]), set(t.PIECE_SHAPES), theme["name"])
+
+    def test_apply_theme_changes_the_colors(self):
+        dark = [i for i, th in enumerate(t.THEMES) if th["name"] == "Dark"][0]
+        self.assertEqual(t.apply_theme(dark), "Dark")
+        self.assertEqual(t.WHITE, t.THEMES[dark]["background"])
+        self.assertEqual(t.BLACK, t.THEMES[dark]["text"])
+        self.assertEqual(t.PIECE_COLORS["T"], t.THEMES[dark]["pieces"]["T"])
+
+    def test_apply_theme_wraps_around(self):
+        t.apply_theme(len(t.THEMES))
+        self.assertEqual(t.theme_index, 0)
+        t.apply_theme(-1)
+        self.assertEqual(t.theme_index, len(t.THEMES) - 1)
+
+    def test_classic_is_the_original_look(self):
+        t.apply_theme(1)
+        t.apply_theme(0)
+        self.assertEqual(t.WHITE, (245, 245, 245))
+        self.assertEqual(t.PIECE_COLORS["I"], (0, 240, 240))
+
+    def test_draw_cell_uses_the_theme_piece_color(self):
+        for i, theme in enumerate(t.THEMES):
+            t.apply_theme(i)
+            screen = pygame.Surface((60, 60))
+            t.draw_cell(screen, 10, 10, 28, t.PIECE_COLORS["T"])
+            self.assertEqual(tuple(screen.get_at((24, 24)))[:3], theme["pieces"]["T"])
+
+    def test_every_theme_draws_a_full_frame(self):
+        pygame.font.init()
+        font = pygame.font.Font(None, 22)
+        for i in range(len(t.THEMES)):
+            t.apply_theme(i)
+            game = t.Game()
+            screen = pygame.Surface(t.WINDOW_SIZE)
+            screen.fill(t.WHITE)
+            t.draw_board(screen, game.board)
+            t.draw_ghost(screen, game.board, game.piece)
+            t.draw_piece(screen, game.piece)
+            t.draw_hold(screen, font, game)
+            t.draw_next_queue(screen, font, game)
+            t.draw_hud(screen, font, game)
+            t.draw_pause(screen, font, font)
 
 
 if __name__ == "__main__":
