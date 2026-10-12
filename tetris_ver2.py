@@ -253,9 +253,19 @@ class Game:
         self.hold_kind = current_kind
         self.can_hold = False
 
+    def toggle_pause(self):
+        """Pause a running game, or resume a paused one. Does nothing once
+        the game is over."""
+        if self.state == "playing":
+            self.state = "paused"
+        elif self.state == "paused":
+            self.state = "playing"
+
     def move(self, dcol, drow):
         """Attempt to move the active piece; returns False and leaves it
-        unchanged if that would collide."""
+        unchanged if that would collide (or the game is not running)."""
+        if self.state != "playing":
+            return False
         self.piece.col += dcol
         self.piece.row += drow
         if not self.board.is_valid(self.piece.cells()):
@@ -482,6 +492,21 @@ def draw_game_over(screen, big_font, small_font):
     screen.blit(subtitle, subtitle.get_rect(center=(board_center_x, board_center_y + 30)))
 
 
+def draw_pause(screen, big_font, small_font):
+    """Cover the board while paused, so the player cannot plan moves."""
+    board_rect = pygame.Rect(BOARD_ORIGIN_X, BOARD_ORIGIN_Y,
+                             BOARD_WIDTH * CELL_SIZE, BOARD_HEIGHT * CELL_SIZE)
+    pygame.draw.rect(screen, PANEL_BG, board_rect)
+    pygame.draw.rect(screen, GRAY, board_rect, 2)
+    center_x, center_y = board_rect.center
+
+    title = big_font.render("PAUSED", True, BLACK)
+    screen.blit(title, title.get_rect(center=(center_x, center_y - 50)))
+    for i, text in enumerate(("P  -  Resume", "R  -  Restart", "Q  -  Quit")):
+        line = small_font.render(text, True, BLACK)
+        screen.blit(line, line.get_rect(center=(center_x, center_y + 10 + i * 30)))
+
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode(WINDOW_SIZE)
@@ -517,10 +542,13 @@ def main():
                     game.hold()
                 elif event.key == pygame.K_DOWN:
                     soft_dropping = True
-                elif event.key == pygame.K_r and game.state == "gameover":
+                elif event.key in (pygame.K_p, pygame.K_ESCAPE):
+                    game.toggle_pause()
+                elif event.key == pygame.K_r and game.state in ("gameover", "paused"):
                     game = Game()
+                    soft_dropping = False
                     scores = None
-                elif event.key == pygame.K_q and game.state == "gameover":
+                elif event.key == pygame.K_q and game.state in ("gameover", "paused"):
                     running = False
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
                 soft_dropping = False
@@ -542,6 +570,8 @@ def main():
         draw_hold(screen, font, game)
         draw_next_queue(screen, font, game)
         draw_hud(screen, font, game)
+        if game.state == "paused":
+            draw_pause(screen, big_font, font)
         if game.state == "gameover":
             draw_game_over(screen, big_font, font)
             draw_leaderboard(screen, font, scores, highlight)

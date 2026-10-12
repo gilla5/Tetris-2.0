@@ -10,7 +10,11 @@
 | → Right Arrow | Move right |
 | ↓ Down Arrow | Move down faster |
 | Spacebar | Drop the piece instantly |
-| Q | Quit after game over |
+| Z | Rotate the other way |
+| C | Hold the piece |
+| P or Esc | Pause and resume |
+| R | Restart (when paused or after game over) |
+| Q | Quit (when paused or after game over) |
 
 
 ## High Scores

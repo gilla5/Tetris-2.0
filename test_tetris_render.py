@@ -84,5 +84,59 @@ class DrawingTests(unittest.TestCase):
         self.assertEqual((game.piece.row, game.piece.col), before)
 
 
+class PauseTests(unittest.TestCase):
+    def test_toggle_pauses_and_resumes(self):
+        game = t.Game()
+        game.toggle_pause()
+        self.assertEqual(game.state, "paused")
+        game.toggle_pause()
+        self.assertEqual(game.state, "playing")
+
+    def test_toggle_does_nothing_after_game_over(self):
+        game = t.Game()
+        game.state = "gameover"
+        game.toggle_pause()
+        self.assertEqual(game.state, "gameover")
+
+    def test_gravity_stops_while_paused(self):
+        game = t.Game()
+        game.toggle_pause()
+        row = game.piece.row
+        game.update(10.0)
+        self.assertEqual(game.piece.row, row)
+
+    def test_no_actions_while_paused(self):
+        game = t.Game()
+        game.toggle_pause()
+        piece = game.piece
+        before = (piece.row, piece.col, piece.rotation, game.score, game.hold_kind)
+        self.assertFalse(game.move(-1, 0))
+        game.rotate()
+        game.soft_drop()
+        game.hard_drop()
+        game.hold()
+        after = (piece.row, piece.col, piece.rotation, game.score, game.hold_kind)
+        self.assertEqual(before, after)
+        self.assertIs(game.piece, piece)
+
+    def test_piece_moves_again_after_resume(self):
+        game = t.Game()
+        game.toggle_pause()
+        game.toggle_pause()
+        self.assertTrue(game.move(-1, 0))
+
+    def test_draw_pause_covers_the_board(self):
+        pygame.font.init()
+        font = pygame.font.Font(None, 22)
+        screen = pygame.Surface(t.WINDOW_SIZE)
+        screen.fill(t.WHITE)
+        game = t.Game()
+        game.board.grid[0][0] = "T"
+        t.draw_board(screen, game.board)
+        t.draw_pause(screen, font, font)
+        corner = (t.BOARD_ORIGIN_X + 5, t.BOARD_ORIGIN_Y + 5)
+        self.assertEqual(tuple(screen.get_at(corner))[:3], t.PANEL_BG)
+
+
 if __name__ == "__main__":
     unittest.main()
