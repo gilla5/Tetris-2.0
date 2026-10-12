@@ -10,9 +10,12 @@
 | → Right Arrow | Move right |
 | ↓ Down Arrow | Move down faster |
 | Spacebar | Drop the piece instantly |
-| R | Restart after game over (or click **Restart**) |
-| L | Sign out after game over (or click **Sign Out**) |
-| Q | Quit after game over (or click **Quit**) |
+| Z | Rotate the other way |
+| C | Hold the piece |
+| T | Change the board theme (Classic, Dark, Pastel, Retro) |
+| P or Esc | Pause and resume |
+| R | Restart (when paused or after game over) |
+| Q | Quit (when paused or after game over) |
 
 
 ## Accounts
@@ -37,6 +40,10 @@ While playing, the **Sign Out** button in the bottom-right corner returns to the
 ## High Scores
 
 Each player's top 5 scores are saved to `scores/<username>.json` next to the game. They show on the game over screen. `users.json` and the `scores` folder are not tracked by git, so add them to `.gitignore`.
+
+## Animations
+
+Full rows blink and wipe out from the middle for 0.4 seconds before they are removed (the game waits during that time). The score is added when the rows are gone. A 'LEVEL n' banner fades out after each level up.
 
 ## Tests
 

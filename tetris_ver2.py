@@ -28,6 +28,8 @@ WHITE = (245, 245, 245)
 GRAY = (90, 90, 90)
 PANEL_BG = (225, 225, 225)
 
+CLEAR_FLASH = (255, 255, 255)  # the line clear blink, the same in every theme
+
 # High score leaderboard, saved next to this file.
 SCORES_FILE = Path(__file__).with_name("highscores.json")
 LEADERBOARD_SIZE = 5
@@ -81,6 +83,67 @@ PIECE_COLORS = {
     "J": (0, 0, 240),
     "L": (240, 160, 0),
 }
+
+# ---------------------------------------------------------------------------
+# Board themes
+#
+# The color names above are really roles: WHITE is the background, BLACK is
+# the text, GRAY is the grid and borders, and PANEL_BG is the side panels.
+# apply_theme() changes them (and PIECE_COLORS) in place, so every draw
+# function picks up the new colors with no other changes.
+# ---------------------------------------------------------------------------
+THEMES = [
+    {
+        "name": "Classic",
+        "background": WHITE, "text": BLACK, "grid": GRAY, "panel": PANEL_BG,
+        "pieces": dict(PIECE_COLORS),
+    },
+    {
+        "name": "Dark",
+        "background": (20, 20, 28), "text": (235, 235, 235),
+        "grid": (60, 60, 75), "panel": (40, 40, 55),
+        "pieces": {
+            "I": (0, 230, 255), "O": (255, 225, 60), "T": (190, 90, 255),
+            "S": (80, 230, 100), "Z": (255, 80, 90), "J": (80, 120, 255),
+            "L": (255, 160, 50),
+        },
+    },
+    {
+        "name": "Pastel",
+        "background": (252, 246, 240), "text": (80, 70, 90),
+        "grid": (220, 210, 205), "panel": (240, 230, 235),
+        "pieces": {
+            "I": (150, 222, 224), "O": (250, 230, 150), "T": (200, 170, 230),
+            "S": (170, 225, 170), "Z": (245, 170, 170), "J": (160, 180, 240),
+            "L": (250, 200, 150),
+        },
+    },
+    {
+        "name": "Retro",
+        "background": (181, 201, 129), "text": (15, 56, 15),
+        "grid": (139, 172, 15), "panel": (155, 188, 100),
+        "pieces": {
+            "I": (15, 56, 15), "O": (48, 98, 48), "T": (15, 56, 15),
+            "S": (48, 98, 48), "Z": (15, 56, 15), "J": (48, 98, 48),
+            "L": (15, 56, 15),
+        },
+    },
+]
+theme_index = 0
+
+
+def apply_theme(index):
+    """Switch to THEMES[index] (wraps around). Returns the theme name."""
+    global WHITE, BLACK, GRAY, PANEL_BG, theme_index
+    theme_index = index % len(THEMES)
+    theme = THEMES[theme_index]
+    WHITE = theme["background"]
+    BLACK = theme["text"]
+    GRAY = theme["grid"]
+    PANEL_BG = theme["panel"]
+    PIECE_COLORS.update(theme["pieces"])
+    return theme["name"]
+
 
 # ---------------------------------------------------------------------------
 # Piece shapes
@@ -155,6 +218,12 @@ LINES_PER_LEVEL = 10
 SOFT_DROP_POINTS = 1
 HARD_DROP_POINTS = 2
 
+# Animations: full rows blink and wipe out before they are removed, and a
+# banner fades out after a level up.
+CLEAR_ANIM_SECONDS = 0.4
+CLEAR_BLINKS = 3
+LEVEL_UP_SECONDS = 1.5
+
 
 def gravity_interval(level):
     """Seconds between automatic downward steps, following the classic
@@ -207,6 +276,10 @@ class Board:
             if row >= 0:
                 self.grid[row][col] = piece.kind
 
+    def full_rows(self):
+        """Indexes of the rows that are completely filled."""
+        return [r for r, row in enumerate(self.grid) if all(cell is not None for cell in row)]
+
     def clear_lines(self):
         """Remove every full row, shifting the rest down. Returns the
         number of lines cleared."""
@@ -247,6 +320,12 @@ class Game:
         self.state = "playing"
         self._fall_timer = 0.0
 
+        # Line clear animation: the full rows stay on the board in the
+        # "clearing" state until the animation is over.
+        self.clearing_rows = []
+        self._clear_timer = 0.0
+        self.level_up_timer = 0.0
+
         # Next-piece queue: always kept topped up to NEXT_QUEUE_SIZE so the
         # UI can show what's coming without consuming it.
         self.next_queue = deque()
@@ -284,9 +363,19 @@ class Game:
         self.hold_kind = current_kind
         self.can_hold = False
 
+    def toggle_pause(self):
+        """Pause a running game, or resume a paused one. Does nothing once
+        the game is over."""
+        if self.state == "playing":
+            self.state = "paused"
+        elif self.state == "paused":
+            self.state = "playing"
+
     def move(self, dcol, drow):
         """Attempt to move the active piece; returns False and leaves it
-        unchanged if that would collide."""
+        unchanged if that would collide (or the game is not running)."""
+        if self.state != "playing":
+            return False
         self.piece.col += dcol
         self.piece.row += drow
         if not self.board.is_valid(self.piece.cells()):
@@ -328,8 +417,20 @@ class Game:
         self.score += dropped * HARD_DROP_POINTS
         self._lock_active_piece()
 
+    @property
+    def clear_progress(self):
+        """How far the line clear animation is, from 0.0 to 1.0."""
+        return min(1.0, self._clear_timer / CLEAR_ANIM_SECONDS)
+
     def update(self, dt):
-        """Advance gravity by dt seconds."""
+        """Advance gravity (or the line clear animation) by dt seconds."""
+        if self.level_up_timer > 0 and self.state in ("playing", "clearing"):
+            self.level_up_timer = max(0.0, self.level_up_timer - dt)
+        if self.state == "clearing":
+            self._clear_timer += dt
+            if self._clear_timer >= CLEAR_ANIM_SECONDS:
+                self._finish_clear()
+            return
         if self.state != "playing":
             return
         self._fall_timer += dt
@@ -340,11 +441,27 @@ class Game:
 
     def _lock_active_piece(self):
         self.board.lock(self.piece)
+        self.clearing_rows = self.board.full_rows()
+        if self.clearing_rows:
+            self.state = "clearing"
+            self._clear_timer = 0.0
+        else:
+            self._next_turn()
+
+    def _finish_clear(self):
+        """The animation is over: remove the rows, then score them."""
         cleared = self.board.clear_lines()
-        if cleared:
-            self.lines_cleared += cleared
-            self.score += LINE_CLEAR_SCORE[cleared] * self.level
-            self.level = 1 + self.lines_cleared // LINES_PER_LEVEL
+        self.clearing_rows = []
+        self.lines_cleared += cleared
+        self.score += LINE_CLEAR_SCORE[cleared] * self.level
+        old_level = self.level
+        self.level = 1 + self.lines_cleared // LINES_PER_LEVEL
+        if self.level > old_level:
+            self.level_up_timer = LEVEL_UP_SECONDS
+        self.state = "playing"
+        self._next_turn()
+
+    def _next_turn(self):
         self.can_hold = True
         self._spawn_piece()
 
@@ -371,15 +488,44 @@ def draw_cell(screen, x, y, size, color):
     pygame.draw.rect(screen, dark, (x + size - 1 - edge, y + 1, edge, size - 2))
 
 
-def draw_board(screen, board):
+def clear_cell_color(color, col, width, progress):
+    """Color of one block in a row that is being cleared, or None once it
+    has been wiped away. The row blinks white, then the blocks vanish from
+    the middle of the row outward over the last 40 percent."""
+    wipe_start = 0.6
+    if progress > wipe_start:
+        reach = (progress - wipe_start) / (1.0 - wipe_start) * (width / 2)
+        if abs(col - (width - 1) / 2) < reach:
+            return None
+    if int(progress * CLEAR_BLINKS * 2) % 2 == 0:
+        return CLEAR_FLASH
+    return color
+
+
+def draw_board(screen, board, clearing_rows=(), progress=0.0):
     for row in range(board.height):
         for col in range(board.width):
             x = BOARD_ORIGIN_X + col * CELL_SIZE
             y = BOARD_ORIGIN_Y + row * CELL_SIZE
             pygame.draw.rect(screen, GRAY, (x, y, CELL_SIZE, CELL_SIZE), 1)
             kind = board.grid[row][col]
-            if kind:
-                draw_cell(screen, x, y, CELL_SIZE, PIECE_COLORS[kind])
+            if not kind:
+                continue
+            color = PIECE_COLORS[kind]
+            if row in clearing_rows:
+                color = clear_cell_color(color, col, board.width, progress)
+                if color is None:
+                    continue
+            draw_cell(screen, x, y, CELL_SIZE, color)
+
+
+def draw_level_up(screen, big_font, level, timer):
+    """'LEVEL n' over the top of the board, fading out as the timer runs
+    down."""
+    text = big_font.render(f"LEVEL {level}", True, HIGHLIGHT)
+    text.set_alpha(int(255 * min(1.0, timer / (LEVEL_UP_SECONDS / 2))))
+    center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
+    screen.blit(text, text.get_rect(center=(center_x, BOARD_ORIGIN_Y + 60)))
 
 
 def draw_piece(screen, piece):
@@ -448,7 +594,8 @@ def draw_next_queue(screen, font, game):
 
 
 def draw_hud(screen, font, game):
-    lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}"]
+    lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}",
+             f"Theme: {THEMES[theme_index]['name']}"]
     for i, line in enumerate(lines):
         screen.blit(font.render(line, True, BLACK), (HOLD_BOX[0], HOLD_BOX[1] + HOLD_BOX[3] + 30 + i * 26))
 
@@ -792,87 +939,28 @@ def draw_game_over(screen, big_font, small_font):
     title = big_font.render("GAME OVER", True, HIGHLIGHT)
     screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 20)))
 
-    labels = {"restart": "Restart", "sign_out": "Sign Out", "quit": "Quit"}
-    mouse_pos = pygame.mouse.get_pos()
-    for name, rect in GAME_OVER_BUTTONS.items():
-        draw_button(screen, small_font, rect, labels[name], mouse_pos,
-                    primary=(name == "restart"))
+def draw_pause(screen, big_font, small_font):
+    """Cover the board while paused, so the player cannot plan moves."""
+    board_rect = pygame.Rect(BOARD_ORIGIN_X, BOARD_ORIGIN_Y,
+                             BOARD_WIDTH * CELL_SIZE, BOARD_HEIGHT * CELL_SIZE)
+    pygame.draw.rect(screen, PANEL_BG, board_rect)
+    pygame.draw.rect(screen, GRAY, board_rect, 2)
+    center_x, center_y = board_rect.center
+
+    title = big_font.render("PAUSED", True, BLACK)
+    screen.blit(title, title.get_rect(center=(center_x, center_y - 50)))
+    for i, text in enumerate(("P  -  Resume", "R  -  Restart", "Q  -  Quit")):
+        line = small_font.render(text, True, BLACK)
+        screen.blit(line, line.get_rect(center=(center_x, center_y + 10 + i * 30)))
 
 
-def draw_login(screen, font, big_font, login):
-    mouse_pos = pygame.mouse.get_pos()
-    layout = login_layout(login.mode)
-    center_x = WINDOW_SIZE[0] // 2
-
-    title = big_font.render("TETRIS", True, BLACK)
-    screen.blit(title, title.get_rect(center=(center_x, 100)))
-    heading = font.render(login.heading, True, GRAY)
-    screen.blit(heading, heading.get_rect(center=(center_x, 150)))
-
-    labels = {"username": "Username", "password": "Password",
-              "confirm": "Confirm password"}
-    blink_on = (pygame.time.get_ticks() // 500) % 2 == 0
-    for i, field in enumerate(login.fields):
-        box = layout["fields"][field]
-        x, y, _, _ = box
-        screen.blit(font.render(labels[field], True, BLACK), (x, y - 26))
-        pygame.draw.rect(screen, PANEL_BG, box)
-        active = i == login.active
-        pygame.draw.rect(screen, HIGHLIGHT if active else GRAY, box, 2)
-
-        text = login.values[field]
-        hidden = field != "username" and not login.show_password
-        shown = ("*" * len(text) if hidden else text)[-22:]
-        if active and blink_on:
-            shown += "|"
-        screen.blit(font.render(shown, True, BLACK), (x + 8, y + 6))
-
-        toggle = layout["toggles"].get(field)
-        if toggle is not None:
-            label = "Hide" if login.show_password else "Show"
-            draw_button(screen, font, toggle, label, mouse_pos)
-
-    if login.message:
-        msg = font.render(login.message, True, HIGHLIGHT)
-        screen.blit(msg, msg.get_rect(center=(center_x, layout["message_y"])))
-
-    if login.mode == "login":
-        submit_label, switch_label = "Sign In", "Create an account"
-    else:
-        submit_label, switch_label = "Sign Up", "Back to Sign In"
-    draw_button(screen, font, layout["submit"], submit_label, mouse_pos, primary=True)
-    draw_button(screen, font, layout["switch"], switch_label, mouse_pos)
-    draw_button(screen, font, layout["quit"], "Quit", mouse_pos)
-
-
-def run_login(screen, clock, font, big_font):
-    """Show the Sign In / Sign Up pages until someone signs in. Returns
-    their username, or None if they quit."""
-    login = LoginScreen()
-    pygame.key.set_repeat(400, 40)  # hold backspace to delete
-    try:
-        while login.user is None:
-            clock.tick(FPS)
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    return None
-                elif event.type == pygame.KEYDOWN:
-                    login.handle_key(event.key, event.unicode)
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    if login.handle_click(event.pos) == "quit":
-                        return None
-            screen.fill(WHITE)
-            draw_login(screen, font, big_font, login)
-            pygame.display.flip()
-        return login.user
-    finally:
-        pygame.key.set_repeat()  # key repeat would break the game controls
-
-
-def play(screen, clock, font, big_font, user):
-    """Run the game for one signed-in player. Returns "logout" or "quit"."""
-    pygame.display.set_caption(f"Tetris - {user}")
-    score_file = scores_path(user)
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode(WINDOW_SIZE)
+    pygame.display.set_caption("Tetris")
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("Calibri", 22, True)
+    big_font = pygame.font.SysFont("Calibri", 46, True)
 
     game = Game()
     soft_dropping = False
@@ -913,18 +1001,21 @@ def play(screen, clock, font, big_font, user):
                     game.hold()
                 elif event.key == pygame.K_DOWN:
                     soft_dropping = True
-                elif event.key == pygame.K_r and game.state == "gameover":
+                elif event.key == pygame.K_t:
+                    apply_theme(theme_index + 1)
+                elif event.key in (pygame.K_p, pygame.K_ESCAPE):
+                    game.toggle_pause()
+                elif event.key == pygame.K_r and game.state in ("gameover", "paused"):
                     game = Game()
+                    soft_dropping = False
                     scores = None
-                elif event.key == pygame.K_l and game.state == "gameover":
-                    return "logout"
-                elif event.key == pygame.K_q and game.state == "gameover":
-                    return "quit"
+                elif event.key == pygame.K_q and game.state in ("gameover", "paused"):
+                    running = False
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
                 soft_dropping = False
 
-        if game.state == "playing":
-            if soft_dropping:
+        if game.state in ("playing", "clearing"):
+            if soft_dropping and game.state == "playing":
                 game.soft_drop()
             game.update(dt)
 
@@ -933,14 +1024,17 @@ def play(screen, clock, font, big_font, user):
             highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
-        draw_board(screen, game.board)
+        draw_board(screen, game.board, game.clearing_rows, game.clear_progress)
         if game.state == "playing":
             draw_ghost(screen, game.board, game.piece)
             draw_piece(screen, game.piece)
         draw_hold(screen, font, game)
         draw_next_queue(screen, font, game)
         draw_hud(screen, font, game)
-        draw_session_panel(screen, font, user)
+        if game.level_up_timer > 0:
+            draw_level_up(screen, big_font, game.level, game.level_up_timer)
+        if game.state == "paused":
+            draw_pause(screen, big_font, font)
         if game.state == "gameover":
             draw_game_over(screen, big_font, font)
             draw_leaderboard(screen, font, scores, highlight, title="YOUR HIGH SCORES")
