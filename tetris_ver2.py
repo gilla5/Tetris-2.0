@@ -1,5 +1,10 @@
+import hashlib
+import hmac
 import json
+import os
 import random
+import re
+import secrets
 from collections import deque
 from pathlib import Path
 
@@ -30,6 +35,18 @@ SCORES_FILE = Path(__file__).with_name("highscores.json")
 LEADERBOARD_SIZE = 5
 HIGHLIGHT = (220, 60, 40)
 
+# User accounts. Accounts are saved in users.json, and each player gets their
+# own high score file in the scores folder. Both live next to this file.
+USERS_FILE = Path(__file__).with_name("users.json")
+SCORES_DIR = Path(__file__).with_name("scores")
+USERNAME_PATTERN = re.compile(r"[A-Za-z0-9_]{3,12}")
+USERNAME_MAX_LEN = 12
+MIN_PASSWORD_LEN = 6
+MAX_PASSWORD_LEN = 64
+# PBKDF2 work factor: higher is slower for an attacker, and for a login too.
+PBKDF2_ITERATIONS = 600_000
+SALT_BYTES = 16
+
 # Side panels: hold box on the left, next-piece queue on the right.
 NEXT_QUEUE_SIZE = 3
 PREVIEW_CELL = 18
@@ -42,6 +59,20 @@ NEXT_BOXES = [
     (NEXT_BOX_X, BOARD_ORIGIN_Y + i * (PANEL_SLOT_HEIGHT + 10), PANEL_WIDTH, PANEL_SLOT_HEIGHT)
     for i in range(NEXT_QUEUE_SIZE)
 ]
+
+# Buttons are (x, y, width, height) rects; clicks are checked with point_in_rect.
+# SIGN_OUT_BUTTON sits in the bottom-right corner while playing. The game over
+# buttons sit in a row inside the game over panel.
+SIGN_OUT_BUTTON = (NEXT_BOX_X, WINDOW_SIZE[1] - 70, PANEL_WIDTH, 40)
+_GAME_OVER_BUTTONS_LEFT = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2 - 150
+_GAME_OVER_BUTTONS_Y = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2 + 12
+GAME_OVER_BUTTONS = {
+    "restart": (_GAME_OVER_BUTTONS_LEFT, _GAME_OVER_BUTTONS_Y, 96, 36),
+    "sign_out": (_GAME_OVER_BUTTONS_LEFT + 102, _GAME_OVER_BUTTONS_Y, 96, 36),
+    "quit": (_GAME_OVER_BUTTONS_LEFT + 204, _GAME_OVER_BUTTONS_Y, 96, 36),
+}
+BUTTON_HOVER = (205, 205, 205)
+BUTTON_PRIMARY_HOVER = (195, 45, 30)
 
 PIECE_COLORS = {
     "I": (0, 240, 240),
@@ -590,6 +621,7 @@ def save_score(score, path=SCORES_FILE):
     if score > 0:
         scores = sorted(scores + [score], reverse=True)[:LEADERBOARD_SIZE]
         try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w") as f:
                 json.dump(scores, f)
         except OSError:
@@ -597,12 +629,269 @@ def save_score(score, path=SCORES_FILE):
     return scores
 
 
-def draw_leaderboard(screen, font, scores, highlight=None):
+# ---------------------------------------------------------------------------
+# User accounts (no pygame needed for any of this)
+#
+# Passwords are never stored. For each account we keep a random salt and a
+# PBKDF2-HMAC-SHA256 hash of the password, plus the iteration count used, so
+# the work factor can be raised later without locking anyone out.
+# ---------------------------------------------------------------------------
+def _hash_password(password, salt, iterations=None):
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, iterations or PBKDF2_ITERATIONS
+    )
+
+
+def _valid_record(key, record):
+    """True if a users.json entry has the expected shape. Usernames are
+    re-checked here so a hand-edited file can never smuggle in a name that
+    would later be used as a file name."""
+    if not isinstance(record, dict):
+        return False
+    name = record.get("name")
+    iterations = record.get("iterations")
+    return (
+        isinstance(name, str)
+        and USERNAME_PATTERN.fullmatch(name) is not None
+        and key == name.lower()
+        and isinstance(record.get("salt"), str)
+        and isinstance(record.get("hash"), str)
+        and isinstance(iterations, int)
+        and not isinstance(iterations, bool)
+        and iterations > 0
+    )
+
+
+def load_users(path=USERS_FILE):
+    """All accounts as {lowercase username: record}. A missing or broken
+    file just means no accounts yet."""
+    try:
+        with open(path) as f:
+            users = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(users, dict):
+        return {}
+    return {key: rec for key, rec in users.items() if _valid_record(key, rec)}
+
+
+def save_users(users, path=USERS_FILE):
+    """Write the accounts file (readable by the owner only). Writes to a
+    temporary file first, so a crash can't leave a half-written users.json.
+    Returns True on success."""
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(users, f)
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def validate_new_account(username, password):
+    """An error message for a bad username or password, or None if both
+    are acceptable."""
+    if USERNAME_PATTERN.fullmatch(username) is None:
+        return "Username must be 3-12 letters, numbers or underscores."
+    if not MIN_PASSWORD_LEN <= len(password) <= MAX_PASSWORD_LEN:
+        return f"Password must be {MIN_PASSWORD_LEN}-{MAX_PASSWORD_LEN} characters."
+    if password.lower() == username.lower():
+        return "Password can't be the same as your username."
+    return None
+
+
+def register_user(username, password, path=USERS_FILE):
+    """Create an account. Returns (username, None) on success, or
+    (None, error message). Usernames are case-insensitive but keep the
+    capitalisation they were registered with."""
+    error = validate_new_account(username, password)
+    if error:
+        return None, error
+    users = load_users(path)
+    key = username.lower()
+    if key in users:
+        return None, "That username is taken."
+    salt = secrets.token_bytes(SALT_BYTES)
+    users[key] = {
+        "name": username,
+        "salt": salt.hex(),
+        "hash": _hash_password(password, salt).hex(),
+        "iterations": PBKDF2_ITERATIONS,
+    }
+    if not save_users(users, path):
+        return None, "Couldn't save the account file."
+    return username, None
+
+
+def authenticate(username, password, path=USERS_FILE):
+    """The account's username if the password is right, otherwise None.
+    Callers should show one generic message for every failure, so nobody
+    can use the login screen to find out which usernames exist."""
+    record = load_users(path).get(username.lower())
+    if record is None:
+        _hash_password(password, bytes(SALT_BYTES))  # same cost as a real check
+        return None
+    try:
+        salt = bytes.fromhex(record["salt"])
+        expected = bytes.fromhex(record["hash"])
+    except ValueError:
+        return None
+    actual = _hash_password(password, salt, record["iterations"])
+    return record["name"] if hmac.compare_digest(actual, expected) else None
+
+
+def scores_path(username):
+    """Where one player's high scores are kept. Safe to build from a
+    username, because usernames are limited to letters, digits and _."""
+    return SCORES_DIR / f"{username.lower()}.json"
+
+
+def point_in_rect(pos, rect):
+    """True if the (x, y) point is inside an (x, y, width, height) rect."""
+    x, y, w, h = rect
+    return x <= pos[0] < x + w and y <= pos[1] < y + h
+
+
+# Sign In / Sign Up page layout.
+FIELD_W = 300
+FIELD_H = 36
+FIELD_SPACING = 80
+FIELD_TOP = 200  # y of the first field's label
+TOGGLE_W = 70    # the Show / Hide button beside a password box
+
+
+def login_layout(mode):
+    """Where everything sits on the Sign In ("login") or Sign Up
+    ("register") page. Drawing and clicking both use this, so they always
+    agree about where the buttons are."""
+    left = WINDOW_SIZE[0] // 2 - FIELD_W // 2
+    if mode == "login":
+        fields = ("username", "password")
+    else:
+        fields = ("username", "password", "confirm")
+    layout = {"fields": {}, "toggles": {}}
+    for i, field in enumerate(fields):
+        y = FIELD_TOP + i * FIELD_SPACING + 26
+        layout["fields"][field] = (left, y, FIELD_W, FIELD_H)
+        if field != "username":
+            layout["toggles"][field] = (left + FIELD_W + 10, y, TOGGLE_W, FIELD_H)
+    bottom = FIELD_TOP + (len(fields) - 1) * FIELD_SPACING + 26 + FIELD_H
+    layout["message_y"] = bottom + 22
+    layout["submit"] = (left, bottom + 50, FIELD_W, 44)
+    layout["switch"] = (left, bottom + 110, FIELD_W, 40)
+    layout["quit"] = (left, WINDOW_SIZE[1] - 70, FIELD_W, 36)
+    return layout
+
+
+class LoginScreen:
+    """State, key handling and click handling for the Sign In and Sign Up
+    pages. Drawing lives in draw_login; once login.user is set, the player
+    is in."""
+
+    MAX_LEN = {"username": USERNAME_MAX_LEN, "password": MAX_PASSWORD_LEN,
+               "confirm": MAX_PASSWORD_LEN}
+
+    def __init__(self, users_path=USERS_FILE):
+        self.users_path = users_path
+        self.mode = "login"  # the Sign In page; "register" is the Sign Up page
+        self.values = {"username": "", "password": "", "confirm": ""}
+        self.active = 0  # index into self.fields
+        self.show_password = False
+        self.message = ""
+        self.user = None
+
+    @property
+    def fields(self):
+        if self.mode == "login":
+            return ("username", "password")
+        return ("username", "password", "confirm")
+
+    @property
+    def heading(self):
+        return "Sign in to play" if self.mode == "login" else "Create your account"
+
+    def toggle_mode(self):
+        """Go from the Sign In page to the Sign Up page, or back."""
+        self.mode = "register" if self.mode == "login" else "login"
+        self.values["password"] = ""
+        self.values["confirm"] = ""
+        self.show_password = False
+        self.active = 0
+        self.message = ""
+
+    def handle_key(self, key, char=""):
+        field = self.fields[self.active]
+        if key in (pygame.K_TAB, pygame.K_DOWN):
+            self.active = (self.active + 1) % len(self.fields)
+        elif key == pygame.K_UP:
+            self.active = (self.active - 1) % len(self.fields)
+        elif key == pygame.K_BACKSPACE:
+            self.values[field] = self.values[field][:-1]
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if self.active < len(self.fields) - 1:
+                self.active += 1
+            else:
+                self.submit()
+        elif char and char.isprintable():
+            if field == "username" and re.fullmatch(r"[A-Za-z0-9_]", char) is None:
+                return
+            if len(self.values[field]) < self.MAX_LEN[field]:
+                self.values[field] += char
+                self.message = ""
+
+    def handle_click(self, pos):
+        """React to a left click at pos. Returns "quit" if the Quit button
+        was clicked, otherwise None."""
+        layout = login_layout(self.mode)
+        for i, field in enumerate(self.fields):
+            if point_in_rect(pos, layout["fields"][field]):
+                self.active = i
+                return None
+            toggle = layout["toggles"].get(field)
+            if toggle is not None and point_in_rect(pos, toggle):
+                self.show_password = not self.show_password
+                return None
+        if point_in_rect(pos, layout["submit"]):
+            self.submit()
+        elif point_in_rect(pos, layout["switch"]):
+            self.toggle_mode()
+        elif point_in_rect(pos, layout["quit"]):
+            return "quit"
+        return None
+
+    def submit(self):
+        username = self.values["username"]
+        password = self.values["password"]
+        if self.mode == "login":
+            name = authenticate(username, password, self.users_path)
+            if name is None:
+                self.message = "Wrong username or password."
+                self.values["password"] = ""
+                self.active = 1
+                return
+        else:
+            if password != self.values["confirm"]:
+                self.message = "Passwords don't match."
+                self.values["password"] = ""
+                self.values["confirm"] = ""
+                self.active = 1
+                return
+            name, error = register_user(username, password, self.users_path)
+            if error:
+                self.message = error
+                return
+        self.user = name
+
+
+def draw_leaderboard(screen, font, scores, highlight=None, title="HIGH SCORES"):
     """Top scores under the game over text. highlight is the index of the
     score that was just earned, shown in red."""
     center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     top = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2 + 70
-    heading = font.render("HIGH SCORES", True, BLACK)
+    heading = font.render(title, True, BLACK)
     screen.blit(heading, heading.get_rect(center=(center_x, top)))
     if not scores:
         line = font.render("No scores yet", True, GRAY)
@@ -612,6 +901,30 @@ def draw_leaderboard(screen, font, scores, highlight=None):
         color = HIGHLIGHT if i == highlight else BLACK
         line = font.render(f"{i + 1}.  {score}", True, color)
         screen.blit(line, line.get_rect(center=(center_x, top + 30 + i * 24)))
+
+
+def draw_button(screen, font, rect, label, mouse_pos, primary=False):
+    """A clickable button. It darkens a little while the mouse is over it."""
+    x, y, w, h = rect
+    hover = point_in_rect(mouse_pos, rect)
+    if primary:
+        fill = BUTTON_PRIMARY_HOVER if hover else HIGHLIGHT
+        text_color = WHITE
+    else:
+        fill = BUTTON_HOVER if hover else PANEL_BG
+        text_color = BLACK
+    pygame.draw.rect(screen, fill, rect, border_radius=6)
+    pygame.draw.rect(screen, GRAY, rect, 2, border_radius=6)
+    text = font.render(label, True, text_color)
+    screen.blit(text, text.get_rect(center=(x + w // 2, y + h // 2)))
+
+
+def draw_session_panel(screen, font, user):
+    """Who is signed in, with the Sign Out button underneath."""
+    x, y, _, _ = SIGN_OUT_BUTTON
+    screen.blit(font.render("Signed in as:", True, GRAY), (x, y - 58))
+    screen.blit(font.render(user, True, BLACK), (x, y - 32))
+    draw_button(screen, font, SIGN_OUT_BUTTON, "Sign Out", pygame.mouse.get_pos())
 
 
 def draw_game_over(screen, big_font, small_font):
@@ -624,10 +937,7 @@ def draw_game_over(screen, big_font, small_font):
     pygame.draw.rect(screen, GRAY, panel, 2)
 
     title = big_font.render("GAME OVER", True, HIGHLIGHT)
-    subtitle = small_font.render("R to restart  -  Q to quit", True, BLACK)
     screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 20)))
-    screen.blit(subtitle, subtitle.get_rect(center=(board_center_x, board_center_y + 30)))
-
 
 def draw_pause(screen, big_font, small_font):
     """Cover the board while paused, so the player cannot plan moves."""
@@ -656,14 +966,26 @@ def main():
     soft_dropping = False
     scores = None
     highlight = None
-    running = True
 
-    while running:
+    while True:
         dt = clock.tick(FPS) / 1000.0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                running = False
+                return "quit"
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if point_in_rect(event.pos, SIGN_OUT_BUTTON):
+                    if scores is None:
+                        save_score(game.score, score_file)  # keep the current run
+                    return "logout"
+                if game.state == "gameover":
+                    if point_in_rect(event.pos, GAME_OVER_BUTTONS["restart"]):
+                        game = Game()
+                        scores = None
+                    elif point_in_rect(event.pos, GAME_OVER_BUTTONS["sign_out"]):
+                        return "logout"
+                    elif point_in_rect(event.pos, GAME_OVER_BUTTONS["quit"]):
+                        return "quit"
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_LEFT:
                     game.move(-1, 0)
@@ -698,7 +1020,7 @@ def main():
             game.update(dt)
 
         if game.state == "gameover" and scores is None:
-            scores = save_score(game.score)
+            scores = save_score(game.score, score_file)
             highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
@@ -715,9 +1037,25 @@ def main():
             draw_pause(screen, big_font, font)
         if game.state == "gameover":
             draw_game_over(screen, big_font, font)
-            draw_leaderboard(screen, font, scores, highlight)
+            draw_leaderboard(screen, font, scores, highlight, title="YOUR HIGH SCORES")
 
         pygame.display.flip()
+
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode(WINDOW_SIZE)
+    clock = pygame.time.Clock()
+    font = pygame.font.SysFont("Calibri", 22, True)
+    big_font = pygame.font.SysFont("Calibri", 46, True)
+
+    while True:
+        pygame.display.set_caption("Tetris - Sign In")
+        user = run_login(screen, clock, font, big_font)
+        if user is None:
+            break
+        if play(screen, clock, font, big_font, user) == "quit":
+            break
 
     pygame.quit()
 
