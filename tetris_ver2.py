@@ -124,6 +124,12 @@ LINES_PER_LEVEL = 10
 SOFT_DROP_POINTS = 1
 HARD_DROP_POINTS = 2
 
+# Animations: full rows blink and wipe out before they are removed, and a
+# banner fades out after a level up.
+CLEAR_ANIM_SECONDS = 0.4
+CLEAR_BLINKS = 3
+LEVEL_UP_SECONDS = 1.5
+
 
 def gravity_interval(level):
     """Seconds between automatic downward steps, following the classic
@@ -176,6 +182,10 @@ class Board:
             if row >= 0:
                 self.grid[row][col] = piece.kind
 
+    def full_rows(self):
+        """Indexes of the rows that are completely filled."""
+        return [r for r, row in enumerate(self.grid) if all(cell is not None for cell in row)]
+
     def clear_lines(self):
         """Remove every full row, shifting the rest down. Returns the
         number of lines cleared."""
@@ -215,6 +225,12 @@ class Game:
         self.level = 1
         self.state = "playing"
         self._fall_timer = 0.0
+
+        # Line clear animation: the full rows stay on the board in the
+        # "clearing" state until the animation is over.
+        self.clearing_rows = []
+        self._clear_timer = 0.0
+        self.level_up_timer = 0.0
 
         # Next-piece queue: always kept topped up to NEXT_QUEUE_SIZE so the
         # UI can show what's coming without consuming it.
@@ -307,8 +323,20 @@ class Game:
         self.score += dropped * HARD_DROP_POINTS
         self._lock_active_piece()
 
+    @property
+    def clear_progress(self):
+        """How far the line clear animation is, from 0.0 to 1.0."""
+        return min(1.0, self._clear_timer / CLEAR_ANIM_SECONDS)
+
     def update(self, dt):
-        """Advance gravity by dt seconds."""
+        """Advance gravity (or the line clear animation) by dt seconds."""
+        if self.level_up_timer > 0 and self.state in ("playing", "clearing"):
+            self.level_up_timer = max(0.0, self.level_up_timer - dt)
+        if self.state == "clearing":
+            self._clear_timer += dt
+            if self._clear_timer >= CLEAR_ANIM_SECONDS:
+                self._finish_clear()
+            return
         if self.state != "playing":
             return
         self._fall_timer += dt
@@ -319,11 +347,27 @@ class Game:
 
     def _lock_active_piece(self):
         self.board.lock(self.piece)
+        self.clearing_rows = self.board.full_rows()
+        if self.clearing_rows:
+            self.state = "clearing"
+            self._clear_timer = 0.0
+        else:
+            self._next_turn()
+
+    def _finish_clear(self):
+        """The animation is over: remove the rows, then score them."""
         cleared = self.board.clear_lines()
-        if cleared:
-            self.lines_cleared += cleared
-            self.score += LINE_CLEAR_SCORE[cleared] * self.level
-            self.level = 1 + self.lines_cleared // LINES_PER_LEVEL
+        self.clearing_rows = []
+        self.lines_cleared += cleared
+        self.score += LINE_CLEAR_SCORE[cleared] * self.level
+        old_level = self.level
+        self.level = 1 + self.lines_cleared // LINES_PER_LEVEL
+        if self.level > old_level:
+            self.level_up_timer = LEVEL_UP_SECONDS
+        self.state = "playing"
+        self._next_turn()
+
+    def _next_turn(self):
         self.can_hold = True
         self._spawn_piece()
 
@@ -350,15 +394,44 @@ def draw_cell(screen, x, y, size, color):
     pygame.draw.rect(screen, dark, (x + size - 1 - edge, y + 1, edge, size - 2))
 
 
-def draw_board(screen, board):
+def clear_cell_color(color, col, width, progress):
+    """Color of one block in a row that is being cleared, or None once it
+    has been wiped away. The row blinks white, then the blocks vanish from
+    the middle of the row outward over the last 40 percent."""
+    wipe_start = 0.6
+    if progress > wipe_start:
+        reach = (progress - wipe_start) / (1.0 - wipe_start) * (width / 2)
+        if abs(col - (width - 1) / 2) < reach:
+            return None
+    if int(progress * CLEAR_BLINKS * 2) % 2 == 0:
+        return WHITE
+    return color
+
+
+def draw_board(screen, board, clearing_rows=(), progress=0.0):
     for row in range(board.height):
         for col in range(board.width):
             x = BOARD_ORIGIN_X + col * CELL_SIZE
             y = BOARD_ORIGIN_Y + row * CELL_SIZE
             pygame.draw.rect(screen, GRAY, (x, y, CELL_SIZE, CELL_SIZE), 1)
             kind = board.grid[row][col]
-            if kind:
-                draw_cell(screen, x, y, CELL_SIZE, PIECE_COLORS[kind])
+            if not kind:
+                continue
+            color = PIECE_COLORS[kind]
+            if row in clearing_rows:
+                color = clear_cell_color(color, col, board.width, progress)
+                if color is None:
+                    continue
+            draw_cell(screen, x, y, CELL_SIZE, color)
+
+
+def draw_level_up(screen, big_font, level, timer):
+    """'LEVEL n' over the top of the board, fading out as the timer runs
+    down."""
+    text = big_font.render(f"LEVEL {level}", True, HIGHLIGHT)
+    text.set_alpha(int(255 * min(1.0, timer / (LEVEL_UP_SECONDS / 2))))
+    center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
+    screen.blit(text, text.get_rect(center=(center_x, BOARD_ORIGIN_Y + 60)))
 
 
 def draw_piece(screen, piece):
@@ -553,8 +626,8 @@ def main():
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
                 soft_dropping = False
 
-        if game.state == "playing":
-            if soft_dropping:
+        if game.state in ("playing", "clearing"):
+            if soft_dropping and game.state == "playing":
                 game.soft_drop()
             game.update(dt)
 
@@ -563,13 +636,15 @@ def main():
             highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
-        draw_board(screen, game.board)
+        draw_board(screen, game.board, game.clearing_rows, game.clear_progress)
         if game.state == "playing":
             draw_ghost(screen, game.board, game.piece)
             draw_piece(screen, game.piece)
         draw_hold(screen, font, game)
         draw_next_queue(screen, font, game)
         draw_hud(screen, font, game)
+        if game.level_up_timer > 0:
+            draw_level_up(screen, big_font, game.level, game.level_up_timer)
         if game.state == "paused":
             draw_pause(screen, big_font, font)
         if game.state == "gameover":

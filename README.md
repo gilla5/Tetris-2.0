@@ -21,6 +21,10 @@
 
 The top 5 scores are saved to `highscores.json` next to the game. They show on the game over screen. The file is not tracked by git.
 
+## Animations
+
+Full rows blink and wipe out from the middle for 0.4 seconds before they are removed (the game waits during that time). The score is added when the rows are gone. A 'LEVEL n' banner fades out after each level up.
+
 ## Tests
 
 `python3 -m unittest test_tetris_render`
