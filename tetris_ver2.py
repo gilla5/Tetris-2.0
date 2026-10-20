@@ -1,11 +1,9 @@
-<<<<<<< HEAD
+import array
 import hashlib
 import hmac
 import json
+import math
 import os
-=======
-import json
->>>>>>> origin/main
 import random
 import re
 import secrets
@@ -37,7 +35,6 @@ SCORES_FILE = Path(__file__).with_name("highscores.json")
 LEADERBOARD_SIZE = 5
 HIGHLIGHT = (220, 60, 40)
 
-<<<<<<< HEAD
 # User accounts. Accounts are saved in users.json, and each player gets their
 # own high score file in the scores folder. Both live next to this file.
 USERS_FILE = Path(__file__).with_name("users.json")
@@ -50,8 +47,6 @@ MAX_PASSWORD_LEN = 64
 PBKDF2_ITERATIONS = 600_000
 SALT_BYTES = 16
 
-=======
->>>>>>> origin/main
 # Side panels: hold box on the left, next-piece queue on the right.
 NEXT_QUEUE_SIZE = 3
 PREVIEW_CELL = 18
@@ -79,6 +74,19 @@ GAME_OVER_BUTTONS = {
 BUTTON_HOVER = (205, 205, 205)
 BUTTON_PRIMARY_HOVER = (195, 45, 30)
 
+# Pause menu: three buttons stacked inside a panel centered on the board.
+_BOARD_CENTER_X = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
+_BOARD_CENTER_Y = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2
+PAUSE_PANEL = (_BOARD_CENTER_X - 130, _BOARD_CENTER_Y - 120, 260, 240)
+PAUSE_BUTTONS = {
+    "resume": (_BOARD_CENTER_X - 80, _BOARD_CENTER_Y - 30, 160, 38),
+    "restart": (_BOARD_CENTER_X - 80, _BOARD_CENTER_Y + 16, 160, 38),
+    "quit": (_BOARD_CENTER_X - 80, _BOARD_CENTER_Y + 62, 160, 38),
+}
+
+# Each player's theme and mute choice, saved next to this file.
+SETTINGS_DIR = Path(__file__).with_name("settings")
+
 PIECE_COLORS = {
     "I": (0, 240, 240),
     "O": (240, 240, 0),
@@ -88,6 +96,59 @@ PIECE_COLORS = {
     "J": (0, 0, 240),
     "L": (240, 160, 0),
 }
+
+# ---------------------------------------------------------------------------
+# Themes. apply_theme() swaps the color names above (and the piece colors) in
+# place, so every draw function picks the new look up on its next call.
+# ---------------------------------------------------------------------------
+THEMES = {
+    "light": {
+        "WHITE": (245, 245, 245), "BLACK": (15, 15, 15), "GRAY": (90, 90, 90),
+        "PANEL_BG": (225, 225, 225), "HIGHLIGHT": (220, 60, 40),
+        "BUTTON_HOVER": (205, 205, 205), "BUTTON_PRIMARY_HOVER": (195, 45, 30),
+        "pieces": dict(PIECE_COLORS),
+    },
+    "dark": {
+        "WHITE": (25, 27, 34), "BLACK": (235, 235, 240), "GRAY": (110, 115, 130),
+        "PANEL_BG": (45, 48, 60), "HIGHLIGHT": (255, 90, 70),
+        "BUTTON_HOVER": (70, 74, 90), "BUTTON_PRIMARY_HOVER": (225, 70, 55),
+        "pieces": dict(PIECE_COLORS),
+    },
+    "retro": {  # Game Boy greens
+        "WHITE": (155, 188, 15), "BLACK": (15, 56, 15), "GRAY": (48, 98, 48),
+        "PANEL_BG": (139, 172, 15), "HIGHLIGHT": (15, 56, 15),
+        "BUTTON_HOVER": (125, 158, 15), "BUTTON_PRIMARY_HOVER": (30, 80, 30),
+        "pieces": {
+            "I": (15, 56, 15), "O": (48, 98, 48), "T": (30, 77, 30),
+            "S": (80, 120, 20), "Z": (40, 90, 70), "J": (20, 70, 50),
+            "L": (95, 130, 25),
+        },
+    },
+}
+THEME_ORDER = ["light", "dark", "retro"]
+current_theme = "light"
+
+
+def apply_theme(name):
+    """Switch every color to the named theme. Raises ValueError for an
+    unknown name."""
+    global WHITE, BLACK, GRAY, PANEL_BG, HIGHLIGHT, BUTTON_HOVER
+    global BUTTON_PRIMARY_HOVER, current_theme
+    if name not in THEMES:
+        raise ValueError(f"unknown theme: {name}")
+    theme = THEMES[name]
+    WHITE, BLACK, GRAY = theme["WHITE"], theme["BLACK"], theme["GRAY"]
+    PANEL_BG, HIGHLIGHT = theme["PANEL_BG"], theme["HIGHLIGHT"]
+    BUTTON_HOVER = theme["BUTTON_HOVER"]
+    BUTTON_PRIMARY_HOVER = theme["BUTTON_PRIMARY_HOVER"]
+    PIECE_COLORS.update(theme["pieces"])
+    current_theme = name
+
+
+def next_theme(name):
+    """The theme after this one in THEME_ORDER (wraps around)."""
+    return THEME_ORDER[(THEME_ORDER.index(name) + 1) % len(THEME_ORDER)]
+
 
 # ---------------------------------------------------------------------------
 # Piece shapes
@@ -161,6 +222,28 @@ LINE_CLEAR_SCORE = {1: 100, 2: 300, 3: 500, 4: 800}  # single/double/triple/tetr
 LINES_PER_LEVEL = 10
 SOFT_DROP_POINTS = 1
 HARD_DROP_POINTS = 2
+
+# T-spin scores by lines cleared (multiplied by level, like normal clears).
+TSPIN_SCORE = {0: 400, 1: 800, 2: 1200, 3: 1600}
+TSPIN_MINI_SCORE = {0: 100, 1: 200, 2: 400}
+COMBO_POINTS = 50          # per combo step, times level
+B2B_MULTIPLIER = 1.5       # back-to-back Tetris / T-spin line clears
+LINE_NAMES = {1: "SINGLE", 2: "DOUBLE", 3: "TRIPLE", 4: "TETRIS"}
+
+# Lock delay: a landed piece stays movable for a moment before it locks.
+LOCK_DELAY = 0.5           # seconds
+MAX_LOCK_RESETS = 15       # moves/rotations that can restart the delay
+
+# How long the on-screen effects last, in seconds.
+CLEAR_ANIM_TIME = 0.3
+MESSAGE_TIME = 1.4
+LEVEL_UP_TIME = 1.5
+
+
+def format_time(seconds):
+    """Seconds as m:ss."""
+    seconds = int(seconds)
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def gravity_interval(level):
@@ -251,8 +334,30 @@ class Game:
         self.score = 0
         self.lines_cleared = 0
         self.level = 1
-        self.state = "playing"
+        self.state = "playing"  # "playing", "paused" or "gameover"
         self._fall_timer = 0.0
+
+        # Stats for the game over screen. elapsed only counts while playing.
+        self.pieces_placed = 0
+        self.elapsed = 0.0
+
+        # Combo, back-to-back and T-spin tracking.
+        self.combo = -1  # -1 means no streak; 0 is the first clear in a row
+        self.back_to_back = False
+        self._rotated_last = False  # the last thing the player did was rotate
+        self._last_kick = 0
+
+        # Lock delay.
+        self._lock_timer = 0.0
+        self._lock_resets = 0
+
+        # Effects. events are names like "lock" or "clear" that play() drains
+        # to make sounds. The rest are timers the renderer reads.
+        self.events = []
+        self.message_lines = []
+        self.message_timer = 0.0
+        self.level_up_timer = 0.0
+        self.clear_anim = None  # {"grid", "rows", "time"} while rows flash
 
         # Next-piece queue: always kept topped up to NEXT_QUEUE_SIZE so the
         # UI can show what's coming without consuming it.
@@ -275,8 +380,21 @@ class Game:
             kind = self.next_queue.popleft()
             self._refill_queue()
         self.piece = Piece(kind)
+        self._rotated_last = False
+        self._last_kick = 0
+        self._lock_timer = 0.0
+        self._lock_resets = 0
         if not self.board.is_valid(self.piece.cells()):
             self.state = "gameover"
+            self.events.append("gameover")
+
+    def toggle_pause(self):
+        """Pause a running game, or resume a paused one. Does nothing once
+        the game is over."""
+        if self.state == "playing":
+            self.state = "paused"
+        elif self.state == "paused":
+            self.state = "playing"
 
     def hold(self):
         """Swap the active piece into the hold slot. Only one hold is
@@ -290,6 +408,21 @@ class Game:
             self._spawn_piece(kind=self.hold_kind)
         self.hold_kind = current_kind
         self.can_hold = False
+        self.events.append("hold")
+
+    def _grounded(self):
+        """True if the active piece is resting on the stack or the floor."""
+        self.piece.row += 1
+        blocked = not self.board.is_valid(self.piece.cells())
+        self.piece.row -= 1
+        return blocked
+
+    def _restart_lock_delay(self):
+        """A move or rotation on the ground restarts the lock delay, up to
+        MAX_LOCK_RESETS times so a piece can't stall forever."""
+        if self._grounded() and self._lock_resets < MAX_LOCK_RESETS:
+            self._lock_timer = 0.0
+            self._lock_resets += 1
 
     def move(self, dcol, drow):
         """Attempt to move the active piece; returns False and leaves it
@@ -300,6 +433,9 @@ class Game:
             self.piece.col -= dcol
             self.piece.row -= drow
             return False
+        self._rotated_last = False
+        if dcol:
+            self._restart_lock_delay()
         return True
 
     def rotate(self, clockwise=True):
@@ -308,15 +444,19 @@ class Game:
         old_state = self.piece.rotation
         new_state = (old_state + (1 if clockwise else -1)) % 4
         kicks = I_KICKS if self.piece.kind == "I" else JLSTZ_KICKS
-        for dx, dy in kicks.get((old_state, new_state), [(0, 0)]):
+        for index, (dx, dy) in enumerate(kicks.get((old_state, new_state), [(0, 0)])):
             self.piece.rotation = new_state
             self.piece.col += dx
             self.piece.row += dy
             if self.board.is_valid(self.piece.cells()):
+                self._rotated_last = True
+                self._last_kick = index
+                self.events.append("rotate")
+                self._restart_lock_delay()
                 return
             self.piece.col -= dx
             self.piece.row -= dy
-        self.piece.rotation = old_state 
+        self.piece.rotation = old_state
 
     def soft_drop(self):
         if self.state != "playing":
@@ -336,24 +476,224 @@ class Game:
         self._lock_active_piece()
 
     def update(self, dt):
-        """Advance gravity by dt seconds."""
+        """Advance gravity, the lock delay and the effect timers by dt seconds."""
         if self.state != "playing":
             return
+        self.elapsed += dt
+        self._tick_effects(dt)
         self._fall_timer += dt
         if self._fall_timer >= gravity_interval(self.level):
             self._fall_timer = 0.0
-            if not self.move(0, 1):
+            self.move(0, 1)
+        if self._grounded():
+            self._lock_timer += dt
+            if self._lock_timer >= LOCK_DELAY:
                 self._lock_active_piece()
+        else:
+            self._lock_timer = 0.0
+
+    def _tick_effects(self, dt):
+        self.message_timer = max(0.0, self.message_timer - dt)
+        self.level_up_timer = max(0.0, self.level_up_timer - dt)
+        if self.message_timer == 0.0:
+            self.message_lines = []
+        if self.clear_anim is not None:
+            self.clear_anim["time"] += dt
+            if self.clear_anim["time"] >= CLEAR_ANIM_TIME:
+                self.clear_anim = None
+
+    def _t_spin_kind(self):
+        """None, "mini" or "full". Uses the three-corner rule: the last move
+        was a rotation of a T piece and at least 3 of the 4 corners around
+        its center are blocked (walls and floor count)."""
+        p = self.piece
+        if p.kind != "T" or not self._rotated_last:
+            return None
+        corners = {"nw": (p.row, p.col), "ne": (p.row, p.col + 2),
+                   "sw": (p.row + 2, p.col), "se": (p.row + 2, p.col + 2)}
+
+        def blocked(row, col):
+            if col < 0 or col >= self.board.width or row >= self.board.height:
+                return True
+            return row >= 0 and self.board.grid[row][col] is not None
+
+        filled = {name for name, (r, c) in corners.items() if blocked(r, c)}
+        if len(filled) < 3:
+            return None
+        # The two corners on the side the T points toward decide mini vs full.
+        front = {0: ("nw", "ne"), 1: ("ne", "se"), 2: ("sw", "se"), 3: ("nw", "sw")}
+        if all(name in filled for name in front[p.rotation]) or self._last_kick == 4:
+            return "full"
+        return "mini"
 
     def _lock_active_piece(self):
+        tspin = self._t_spin_kind()
         self.board.lock(self.piece)
+        full_rows = [i for i, row in enumerate(self.board.grid)
+                     if all(cell is not None for cell in row)]
+        snapshot = [row[:] for row in self.board.grid] if full_rows else None
         cleared = self.board.clear_lines()
+        self.pieces_placed += 1
+        self.events.append("lock")
+
+        if tspin == "full":
+            points = TSPIN_SCORE[cleared]
+        elif tspin == "mini":
+            points = TSPIN_MINI_SCORE.get(cleared, 400)
+        else:
+            points = LINE_CLEAR_SCORE.get(cleared, 0)
+
+        # Back-to-back: Tetrises and T-spin line clears are "difficult". A
+        # difficult clear right after another earns a bonus; an ordinary
+        # clear ends the chain. Locks that clear nothing change nothing.
+        b2b_bonus = False
+        if cleared:
+            if cleared == 4 or tspin:
+                if self.back_to_back:
+                    points = int(points * B2B_MULTIPLIER)
+                    b2b_bonus = True
+                self.back_to_back = True
+            else:
+                self.back_to_back = False
+            self.combo += 1
+        else:
+            self.combo = -1
+
+        self.score += points * self.level
+        if self.combo > 0:
+            self.score += COMBO_POINTS * self.combo * self.level
+
+        old_level = self.level
         if cleared:
             self.lines_cleared += cleared
-            self.score += LINE_CLEAR_SCORE[cleared] * self.level
             self.level = 1 + self.lines_cleared // LINES_PER_LEVEL
+            self.clear_anim = {"grid": snapshot, "rows": full_rows, "time": 0.0}
+        if self.level > old_level:
+            self.level_up_timer = LEVEL_UP_TIME
+            self.events.append("levelup")
+
+        self._announce(cleared, tspin, b2b_bonus)
         self.can_hold = True
         self._spawn_piece()
+
+    def _announce(self, cleared, tspin, b2b_bonus):
+        """Set the on-screen text and the sound for what just happened."""
+        lines = []
+        if b2b_bonus:
+            lines.append("BACK-TO-BACK")
+        name = []
+        if tspin:
+            name.append("T-SPIN MINI" if tspin == "mini" else "T-SPIN")
+        if cleared:
+            name.append(LINE_NAMES[cleared])
+        if name:
+            lines.append(" ".join(name))
+        if self.combo >= 1:
+            lines.append(f"COMBO x{self.combo}")
+        if lines:
+            self.message_lines = lines
+            self.message_timer = MESSAGE_TIME
+        if cleared and (cleared == 4 or tspin):
+            self.events.append("tetris")
+        elif cleared:
+            self.events.append("clear")
+        elif tspin:
+            self.events.append("tspin")
+
+
+# ---------------------------------------------------------------------------
+# Sound. Tones are generated in code, so there are no audio files to ship.
+# If there is no audio device the game just stays silent.
+# ---------------------------------------------------------------------------
+SOUND_RATE = 22050
+SOUND_NOTES = {  # name -> [(frequency in Hz, seconds), ...]
+    "move": [(220, 0.03)],
+    "rotate": [(330, 0.04)],
+    "hold": [(262, 0.05), (330, 0.05)],
+    "lock": [(130, 0.07)],
+    "clear": [(523, 0.07), (659, 0.09)],
+    "tetris": [(523, 0.06), (659, 0.06), (784, 0.06), (1047, 0.12)],
+    "tspin": [(440, 0.06), (554, 0.06), (659, 0.10)],
+    "levelup": [(392, 0.08), (523, 0.08), (659, 0.08), (784, 0.14)],
+    "gameover": [(392, 0.15), (330, 0.15), (262, 0.15), (196, 0.30)],
+}
+
+
+def synth(notes, rate=SOUND_RATE, channels=1, volume=0.25):
+    """16-bit sine tones with a fade-out (no clicks), as raw bytes."""
+    samples = array.array("h")
+    for freq, seconds in notes:
+        count = int(rate * seconds)
+        for i in range(count):
+            value = int(32767 * volume * (1 - i / count)
+                        * math.sin(2 * math.pi * freq * i / rate))
+            samples.extend([value] * channels)
+    return samples.tobytes()
+
+
+class SoundBank:
+    """All the game sounds, with a mute switch."""
+
+    def __init__(self, muted=False):
+        self.muted = muted
+        self.sounds = {}
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(SOUND_RATE, -16, 1)
+            rate, fmt, channels = pygame.mixer.get_init()
+            if fmt != -16:
+                return
+            for name, notes in SOUND_NOTES.items():
+                self.sounds[name] = pygame.mixer.Sound(
+                    buffer=synth(notes, rate, channels))
+        except pygame.error:
+            self.sounds = {}
+
+    @property
+    def available(self):
+        return bool(self.sounds)
+
+    def play(self, name):
+        if not self.muted and name in self.sounds:
+            self.sounds[name].play()
+
+    def toggle_mute(self):
+        self.muted = not self.muted
+        return self.muted
+
+
+# ---------------------------------------------------------------------------
+# Per-player settings (theme and mute), saved in the settings folder
+# ---------------------------------------------------------------------------
+def settings_path(username):
+    """Where one player's settings are kept. Safe to build from a username,
+    because usernames are limited to letters, digits and _."""
+    return SETTINGS_DIR / f"{username.lower()}.json"
+
+
+def load_settings(path):
+    """A player's saved settings. A missing or broken file gives defaults."""
+    settings = {"theme": "light", "muted": False}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return settings
+    if isinstance(data, dict):
+        if data.get("theme") in THEMES:
+            settings["theme"] = data["theme"]
+        if isinstance(data.get("muted"), bool):
+            settings["muted"] = data["muted"]
+    return settings
+
+
+def save_settings(settings, path):
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(settings, f)
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -378,15 +718,21 @@ def draw_cell(screen, x, y, size, color):
     pygame.draw.rect(screen, dark, (x + size - 1 - edge, y + 1, edge, size - 2))
 
 
-def draw_board(screen, board):
-    for row in range(board.height):
-        for col in range(board.width):
+def draw_grid(screen, grid, flash_rows=(), flash_on=False):
+    """Draw a grid of locked cells. Rows in flash_rows blink to the highlight
+    color while flash_on is True (the line-clear animation)."""
+    for row, cells in enumerate(grid):
+        for col, kind in enumerate(cells):
             x = BOARD_ORIGIN_X + col * CELL_SIZE
             y = BOARD_ORIGIN_Y + row * CELL_SIZE
             pygame.draw.rect(screen, GRAY, (x, y, CELL_SIZE, CELL_SIZE), 1)
-            kind = board.grid[row][col]
             if kind:
-                draw_cell(screen, x, y, CELL_SIZE, PIECE_COLORS[kind])
+                color = HIGHLIGHT if (flash_on and row in flash_rows) else PIECE_COLORS[kind]
+                draw_cell(screen, x, y, CELL_SIZE, color)
+
+
+def draw_board(screen, board):
+    draw_grid(screen, board.grid)
 
 
 def draw_piece(screen, piece):
@@ -455,9 +801,44 @@ def draw_next_queue(screen, font, game):
 
 
 def draw_hud(screen, font, game):
-    lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}"]
+    lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}",
+             f"Pieces: {game.pieces_placed}", f"Time: {format_time(game.elapsed)}"]
     for i, line in enumerate(lines):
         screen.blit(font.render(line, True, BLACK), (HOLD_BOX[0], HOLD_BOX[1] + HOLD_BOX[3] + 30 + i * 26))
+
+
+def draw_hints(screen, small_font, muted):
+    """Key reminders for the features that aren't in the README table's
+    basics, in the bottom-left corner."""
+    lines = ["P / Esc  Pause", f"M  Sound {'off' if muted else 'on'}", f"T  Theme: {current_theme}"]
+    top = WINDOW_SIZE[1] - 20 - len(lines) * 20
+    for i, line in enumerate(lines):
+        screen.blit(small_font.render(line, True, GRAY), (HOLD_BOX[0], top + i * 20))
+
+
+def draw_effects(screen, font, big_font, game):
+    """Clear / T-spin / combo text at the top of the board, and LEVEL UP."""
+    for i, line in enumerate(game.message_lines):
+        text = font.render(line, True, HIGHLIGHT)
+        screen.blit(text, text.get_rect(center=(_BOARD_CENTER_X, BOARD_ORIGIN_Y + 30 + i * 26)))
+    if game.level_up_timer > 0:
+        text = big_font.render("LEVEL UP!", True, HIGHLIGHT)
+        screen.blit(text, text.get_rect(center=(_BOARD_CENTER_X, BOARD_ORIGIN_Y + 130)))
+
+
+def draw_pause(screen, big_font, font):
+    """Cover the board (so you can't plan while paused) and show the menu."""
+    board_rect = (BOARD_ORIGIN_X, BOARD_ORIGIN_Y, BOARD_WIDTH * CELL_SIZE, BOARD_HEIGHT * CELL_SIZE)
+    pygame.draw.rect(screen, PANEL_BG, board_rect)
+    pygame.draw.rect(screen, GRAY, board_rect, 2)
+    pygame.draw.rect(screen, WHITE, PAUSE_PANEL, border_radius=8)
+    pygame.draw.rect(screen, GRAY, PAUSE_PANEL, 2, border_radius=8)
+    title = big_font.render("PAUSED", True, BLACK)
+    screen.blit(title, title.get_rect(center=(_BOARD_CENTER_X, PAUSE_PANEL[1] + 40)))
+    labels = {"resume": "Resume", "restart": "Restart", "quit": "Quit"}
+    mouse_pos = pygame.mouse.get_pos()
+    for name, rect in PAUSE_BUTTONS.items():
+        draw_button(screen, font, rect, labels[name], mouse_pos, primary=(name == "resume"))
 
 
 def load_scores(path=SCORES_FILE):
@@ -481,10 +862,7 @@ def save_score(score, path=SCORES_FILE):
     if score > 0:
         scores = sorted(scores + [score], reverse=True)[:LEADERBOARD_SIZE]
         try:
-<<<<<<< HEAD
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-=======
->>>>>>> origin/main
             with open(path, "w") as f:
                 json.dump(scores, f)
         except OSError:
@@ -492,7 +870,6 @@ def save_score(score, path=SCORES_FILE):
     return scores
 
 
-<<<<<<< HEAD
 # ---------------------------------------------------------------------------
 # User accounts (no pygame needed for any of this)
 #
@@ -751,18 +1128,11 @@ class LoginScreen:
 
 
 def draw_leaderboard(screen, font, scores, highlight=None, title="HIGH SCORES"):
-=======
-def draw_leaderboard(screen, font, scores, highlight=None):
->>>>>>> origin/main
     """Top scores under the game over text. highlight is the index of the
     score that was just earned, shown in red."""
     center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     top = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2 + 70
-<<<<<<< HEAD
     heading = font.render(title, True, BLACK)
-=======
-    heading = font.render("HIGH SCORES", True, BLACK)
->>>>>>> origin/main
     screen.blit(heading, heading.get_rect(center=(center_x, top)))
     if not scores:
         line = font.render("No scores yet", True, GRAY)
@@ -774,7 +1144,6 @@ def draw_leaderboard(screen, font, scores, highlight=None):
         screen.blit(line, line.get_rect(center=(center_x, top + 30 + i * 24)))
 
 
-<<<<<<< HEAD
 def draw_button(screen, font, rect, label, mouse_pos, primary=False):
     """A clickable button. It darkens a little while the mouse is over it."""
     x, y, w, h = rect
@@ -799,9 +1168,7 @@ def draw_session_panel(screen, font, user):
     draw_button(screen, font, SIGN_OUT_BUTTON, "Sign Out", pygame.mouse.get_pos())
 
 
-=======
->>>>>>> origin/main
-def draw_game_over(screen, big_font, small_font):
+def draw_game_over(screen, big_font, small_font, game=None):
     board_center_x = BOARD_ORIGIN_X + (BOARD_WIDTH * CELL_SIZE) // 2
     board_center_y = BOARD_ORIGIN_Y + (BOARD_HEIGHT * CELL_SIZE) // 2
 
@@ -811,11 +1178,14 @@ def draw_game_over(screen, big_font, small_font):
     pygame.draw.rect(screen, GRAY, panel, 2)
 
     title = big_font.render("GAME OVER", True, HIGHLIGHT)
-<<<<<<< HEAD
-=======
-    subtitle = small_font.render("R to restart  -  Q to quit", True, BLACK)
->>>>>>> origin/main
-    screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 20)))
+    screen.blit(title, title.get_rect(center=(board_center_x, board_center_y - 72)))
+
+    if game is not None:
+        stats = [f"Pieces {game.pieces_placed}    Lines {game.lines_cleared}",
+                 f"Level {game.level}    Time {format_time(game.elapsed)}"]
+        for i, line in enumerate(stats):
+            text = small_font.render(line, True, BLACK)
+            screen.blit(text, text.get_rect(center=(board_center_x, board_center_y - 40 + i * 22)))
 
     labels = {"restart": "Restart", "sign_out": "Sign Out", "quit": "Quit"}
     mouse_pos = pygame.mouse.get_pos()
@@ -894,19 +1264,24 @@ def run_login(screen, clock, font, big_font):
         pygame.key.set_repeat()  # key repeat would break the game controls
 
 
-def play(screen, clock, font, big_font, user):
+def play(screen, clock, font, big_font, user, sounds=None):
     """Run the game for one signed-in player. Returns "logout" or "quit"."""
     pygame.display.set_caption(f"Tetris - {user}")
     score_file = scores_path(user)
+    settings_file = settings_path(user)
+    settings = load_settings(settings_file)
+    apply_theme(settings["theme"])
+    sounds = sounds or SoundBank()
+    sounds.muted = settings["muted"]
+    small_font = pygame.font.SysFont("Calibri", 16, True)
+
+    def save_prefs():
+        save_settings({"theme": current_theme, "muted": sounds.muted}, settings_file)
 
     game = Game()
     soft_dropping = False
     scores = None
     highlight = None
-<<<<<<< HEAD
-=======
-    running = True
->>>>>>> origin/main
 
     while True:
         dt = clock.tick(FPS) / 1000.0
@@ -919,7 +1294,16 @@ def play(screen, clock, font, big_font, user):
                     if scores is None:
                         save_score(game.score, score_file)  # keep the current run
                     return "logout"
-                if game.state == "gameover":
+                if game.state == "paused":
+                    if point_in_rect(event.pos, PAUSE_BUTTONS["resume"]):
+                        game.toggle_pause()
+                    elif point_in_rect(event.pos, PAUSE_BUTTONS["restart"]):
+                        save_score(game.score, score_file)
+                        game = Game()
+                    elif point_in_rect(event.pos, PAUSE_BUTTONS["quit"]):
+                        save_score(game.score, score_file)
+                        return "quit"
+                elif game.state == "gameover":
                     if point_in_rect(event.pos, GAME_OVER_BUTTONS["restart"]):
                         game = Game()
                         scores = None
@@ -928,30 +1312,47 @@ def play(screen, clock, font, big_font, user):
                     elif point_in_rect(event.pos, GAME_OVER_BUTTONS["quit"]):
                         return "quit"
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_LEFT:
-                    game.move(-1, 0)
-                elif event.key == pygame.K_RIGHT:
-                    game.move(1, 0)
-                elif event.key == pygame.K_UP:
-                    game.rotate(clockwise=True)
-                elif event.key == pygame.K_z:
-                    game.rotate(clockwise=False)
-                elif event.key == pygame.K_SPACE:
-                    game.hard_drop()
-                elif event.key == pygame.K_c:
-                    game.hold()
-                elif event.key == pygame.K_DOWN:
-                    soft_dropping = True
-                elif event.key == pygame.K_r and game.state == "gameover":
-                    game = Game()
-                    scores = None
-<<<<<<< HEAD
-                elif event.key == pygame.K_l and game.state == "gameover":
-                    return "logout"
-=======
->>>>>>> origin/main
-                elif event.key == pygame.K_q and game.state == "gameover":
-                    return "quit"
+                key = event.key
+                if key == pygame.K_m:
+                    sounds.toggle_mute()
+                    save_prefs()
+                elif key == pygame.K_t:
+                    apply_theme(next_theme(current_theme))
+                    save_prefs()
+                elif key in (pygame.K_p, pygame.K_ESCAPE) and game.state != "gameover":
+                    game.toggle_pause()
+                elif game.state == "playing":
+                    if key == pygame.K_LEFT:
+                        if game.move(-1, 0):
+                            sounds.play("move")
+                    elif key == pygame.K_RIGHT:
+                        if game.move(1, 0):
+                            sounds.play("move")
+                    elif key == pygame.K_UP:
+                        game.rotate(clockwise=True)
+                    elif key == pygame.K_z:
+                        game.rotate(clockwise=False)
+                    elif key == pygame.K_SPACE:
+                        game.hard_drop()
+                    elif key == pygame.K_c:
+                        game.hold()
+                    elif key == pygame.K_DOWN:
+                        soft_dropping = True
+                elif game.state == "paused":
+                    if key == pygame.K_r:
+                        save_score(game.score, score_file)
+                        game = Game()
+                    elif key == pygame.K_q:
+                        save_score(game.score, score_file)
+                        return "quit"
+                elif game.state == "gameover":
+                    if key == pygame.K_r:
+                        game = Game()
+                        scores = None
+                    elif key == pygame.K_l:
+                        return "logout"
+                    elif key == pygame.K_q:
+                        return "quit"
             elif event.type == pygame.KEYUP and event.key == pygame.K_DOWN:
                 soft_dropping = False
 
@@ -959,48 +1360,61 @@ def play(screen, clock, font, big_font, user):
             if soft_dropping:
                 game.soft_drop()
             game.update(dt)
+        for name in game.events:
+            sounds.play(name)
+        game.events.clear()
 
         if game.state == "gameover" and scores is None:
-<<<<<<< HEAD
             scores = save_score(game.score, score_file)
-=======
-            scores = save_score(game.score)
->>>>>>> origin/main
             highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
-        draw_board(screen, game.board)
-        if game.state == "playing":
-            draw_ghost(screen, game.board, game.piece)
-            draw_piece(screen, game.piece)
-        draw_hold(screen, font, game)
-        draw_next_queue(screen, font, game)
-        draw_hud(screen, font, game)
-        draw_session_panel(screen, font, user)
-        if game.state == "gameover":
-            draw_game_over(screen, big_font, font)
-<<<<<<< HEAD
-            draw_leaderboard(screen, font, scores, highlight, title="YOUR HIGH SCORES")
-=======
-            draw_leaderboard(screen, font, scores, highlight)
->>>>>>> origin/main
+        if game.state == "paused":
+            draw_hold(screen, font, game)
+            draw_next_queue(screen, font, game)
+            draw_hud(screen, font, game)
+            draw_session_panel(screen, font, user)
+            draw_hints(screen, small_font, sounds.muted)
+            draw_pause(screen, big_font, font)
+        else:
+            if game.clear_anim:
+                anim = game.clear_anim
+                draw_grid(screen, anim["grid"], anim["rows"], int(anim["time"] * 20) % 2 == 0)
+            else:
+                draw_board(screen, game.board)
+            if game.state == "playing":
+                draw_ghost(screen, game.board, game.piece)
+                draw_piece(screen, game.piece)
+            draw_hold(screen, font, game)
+            draw_next_queue(screen, font, game)
+            draw_hud(screen, font, game)
+            draw_session_panel(screen, font, user)
+            draw_hints(screen, small_font, sounds.muted)
+            if game.state == "playing":
+                draw_effects(screen, font, big_font, game)
+            if game.state == "gameover":
+                draw_game_over(screen, big_font, font, game)
+                draw_leaderboard(screen, font, scores, highlight, title="YOUR HIGH SCORES")
 
         pygame.display.flip()
 
 
 def main():
+    pygame.mixer.pre_init(SOUND_RATE, -16, 1)
     pygame.init()
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Calibri", 22, True)
     big_font = pygame.font.SysFont("Calibri", 46, True)
+    sounds = SoundBank()
 
     while True:
+        apply_theme("light")  # the sign-in pages always use the default look
         pygame.display.set_caption("Tetris - Sign In")
         user = run_login(screen, clock, font, big_font)
         if user is None:
             break
-        if play(screen, clock, font, big_font, user) == "quit":
+        if play(screen, clock, font, big_font, user, sounds) == "quit":
             break
 
     pygame.quit()
