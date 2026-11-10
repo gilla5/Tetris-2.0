@@ -107,6 +107,8 @@ Score list rules (`clean_scores`, `merge_scores`) and the `CloudSync` client cla
 | `test_tetris_features.py` | Pause, stats, combos, back-to-back, T-spins, lock delay, effects, themes, settings, sound, layout, a scripted play session |
 | `test_tetris_cloud.py` | Score merging, the HTTP server, the client, game integration |
 | `test_tetris_extras.py` | Next queue, row bombs, music |
+| `test_tetris_regression.py` | Golden rule values, past trouble spots, seeded random games |
+| `test_tetris_acceptance.py` | Requirement stories (R1 to R10) written as Given / When / Then |
 
 ---
 
@@ -330,7 +332,7 @@ Frame time `dt` comes from `clock.tick(FPS) / 1000`. Holding the Down key sets a
 | **Layout** | Buttons and panels fit inside the window and do not overlap |
 | **Safety** | Bad usernames, bad request bodies, wrong keys, oversize bodies, damaged files |
 
-Run: `python3 -m unittest test_tetris_render test_tetris_auth test_tetris_features test_tetris_cloud test_tetris_extras`
+Run: `python3 -m unittest test_tetris_render test_tetris_auth test_tetris_features test_tetris_cloud test_tetris_extras test_tetris_regression test_tetris_acceptance`
 
 Tests set `SDL_VIDEODRIVER` and `SDL_AUDIODRIVER` to `dummy` so they run without a screen or speakers. A few drawing tests check actual pixels and need real pygame.
 
