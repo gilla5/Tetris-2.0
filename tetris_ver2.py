@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pygame
 
+from cloud_sync import CloudSync
+
 # ---------------------------------------------------------------------------
 # Board / window configuration
 # ---------------------------------------------------------------------------
@@ -239,6 +241,12 @@ CLEAR_ANIM_TIME = 0.3
 MESSAGE_TIME = 1.4
 LEVEL_UP_TIME = 1.5
 
+# Row bomb: a Tetris or a T-spin line clear earns a bomb (up to MAX_BOMBS).
+# Pressing B blasts the bottom BOMB_ROWS rows away.
+MAX_BOMBS = 3
+BOMB_ROWS = 2
+BOMB_POINTS = 50  # per blasted row that had blocks in it, times level
+
 
 def format_time(seconds):
     """Seconds as m:ss."""
@@ -344,6 +352,7 @@ class Game:
         # Combo, back-to-back and T-spin tracking.
         self.combo = -1  # -1 means no streak; 0 is the first clear in a row
         self.back_to_back = False
+        self.bombs = 0  # row bombs the player is holding
         self._rotated_last = False  # the last thing the player did was rotate
         self._last_kick = 0
 
@@ -573,8 +582,30 @@ class Game:
             self.events.append("levelup")
 
         self._announce(cleared, tspin, b2b_bonus)
+        if cleared and (cleared == 4 or tspin) and self.bombs < MAX_BOMBS:
+            self.bombs += 1
+            self.events.append("bombready")
         self.can_hold = True
         self._spawn_piece()
+
+    def use_bomb(self):
+        """Blast the bottom BOMB_ROWS rows away and let the stack above fall
+        down. Returns True if a bomb was used. It needs a bomb in hand and
+        at least one block in those rows, so one is never wasted."""
+        if self.state != "playing" or self.bombs <= 0:
+            return False
+        bottom = self.board.grid[-BOMB_ROWS:]
+        blasted = sum(1 for row in bottom if any(cell is not None for cell in row))
+        if not blasted:
+            return False
+        empty_rows = [[None] * self.board.width for _ in range(BOMB_ROWS)]
+        self.board.grid = empty_rows + self.board.grid[:-BOMB_ROWS]
+        self.bombs -= 1
+        self.score += BOMB_POINTS * blasted * self.level
+        self.events.append("bomb")
+        self.message_lines = ["BOOM!"]
+        self.message_timer = MESSAGE_TIME
+        return True
 
     def _announce(self, cleared, tspin, b2b_bonus):
         """Set the on-screen text and the sound for what just happened."""
@@ -616,6 +647,8 @@ SOUND_NOTES = {  # name -> [(frequency in Hz, seconds), ...]
     "tspin": [(440, 0.06), (554, 0.06), (659, 0.10)],
     "levelup": [(392, 0.08), (523, 0.08), (659, 0.08), (784, 0.14)],
     "gameover": [(392, 0.15), (330, 0.15), (262, 0.15), (196, 0.30)],
+    "bomb": [(110, 0.05), (82, 0.08), (65, 0.20)],
+    "bombready": [(659, 0.05), (880, 0.10)],
 }
 
 
@@ -660,6 +693,87 @@ class SoundBank:
     def toggle_mute(self):
         self.muted = not self.muted
         return self.muted
+
+
+# ---------------------------------------------------------------------------
+# Background music. A short loop that is generated in code and plays faster
+# as the level goes up. A new loop is built the first time each tempo is
+# needed, then kept.
+# ---------------------------------------------------------------------------
+MUSIC_VOLUME = 0.10
+MUSIC_BEAT_SECONDS = 0.22       # length of one beat at level 1
+MUSIC_SPEEDUP_PER_LEVEL = 0.08  # each level plays 8% faster than level 1
+MUSIC_MAX_LEVEL = 10            # levels from here on share the fastest tempo
+MUSIC_MELODY = [  # (frequency in Hz, beats); 0 Hz is a rest
+    (440, 1), (523, 1), (587, 1), (659, 1), (587, 1), (523, 1), (440, 2),
+    (392, 1), (440, 1), (523, 1), (587, 1), (523, 1), (440, 1), (392, 2),
+    (0, 1),
+]
+
+
+def music_speed(level):
+    """How much faster than level 1 the music plays (1.0 at level 1)."""
+    return 1 + MUSIC_SPEEDUP_PER_LEVEL * (min(max(level, 1), MUSIC_MAX_LEVEL) - 1)
+
+
+def music_notes(level):
+    """The loop as (frequency, seconds) notes for this level's tempo."""
+    seconds_per_beat = MUSIC_BEAT_SECONDS / music_speed(level)
+    return [(freq, beats * seconds_per_beat) for freq, beats in MUSIC_MELODY]
+
+
+class Music:
+    """Plays the background loop and keeps it matched to the game: it
+    speeds up with the level, pauses with the game, and stops when muted
+    or when the game is over. With no audio device it does nothing."""
+
+    def __init__(self):
+        self.available = False
+        self.loops = {}      # level -> pygame Sound
+        self.channel = None
+        self.level = None
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(SOUND_RATE, -16, 1)
+            self.rate, fmt, self.channels = pygame.mixer.get_init()
+            self.available = fmt == -16
+        except pygame.error:
+            self.available = False
+
+    def _loop_for(self, level):
+        if level not in self.loops:
+            self.loops[level] = pygame.mixer.Sound(buffer=synth(
+                music_notes(level), self.rate, self.channels, MUSIC_VOLUME))
+        return self.loops[level]
+
+    def stop(self):
+        if self.channel is not None:
+            try:
+                self.channel.stop()
+            except pygame.error:
+                pass
+        self.channel = None
+        self.level = None
+
+    def update(self, level, state, muted):
+        """Call once per frame with the game's level and state."""
+        if not self.available:
+            return
+        level = min(max(level, 1), MUSIC_MAX_LEVEL)
+        try:
+            if muted or state == "gameover":
+                self.stop()
+            elif state == "paused":
+                if self.channel is not None:
+                    self.channel.pause()
+            elif self.channel is None or level != self.level:
+                self.stop()
+                self.channel = self._loop_for(level).play(loops=-1)
+                self.level = level if self.channel is not None else None
+            else:
+                self.channel.unpause()
+        except pygame.error:
+            self.available = False
 
 
 # ---------------------------------------------------------------------------
@@ -802,7 +916,8 @@ def draw_next_queue(screen, font, game):
 
 def draw_hud(screen, font, game):
     lines = [f"Score: {game.score}", f"Level: {game.level}", f"Lines: {game.lines_cleared}",
-             f"Pieces: {game.pieces_placed}", f"Time: {format_time(game.elapsed)}"]
+             f"Pieces: {game.pieces_placed}", f"Time: {format_time(game.elapsed)}",
+             f"Bombs: {game.bombs}/{MAX_BOMBS}"]
     for i, line in enumerate(lines):
         screen.blit(font.render(line, True, BLACK), (HOLD_BOX[0], HOLD_BOX[1] + HOLD_BOX[3] + 30 + i * 26))
 
@@ -810,7 +925,7 @@ def draw_hud(screen, font, game):
 def draw_hints(screen, small_font, muted):
     """Key reminders for the features that aren't in the README table's
     basics, in the bottom-left corner."""
-    lines = ["P / Esc  Pause", f"M  Sound {'off' if muted else 'on'}", f"T  Theme: {current_theme}"]
+    lines = ["P / Esc  Pause", "B  Row bomb", f"M  Sound {'off' if muted else 'on'}", f"T  Theme: {current_theme}"]
     top = WINDOW_SIZE[1] - 20 - len(lines) * 20
     for i, line in enumerate(lines):
         screen.blit(small_font.render(line, True, GRAY), (HOLD_BOX[0], top + i * 20))
@@ -868,6 +983,33 @@ def save_score(score, path=SCORES_FILE):
         except OSError:
             pass
     return scores
+
+
+def write_scores(scores, path):
+    """Replace the scores file with this list. Returns True on success."""
+    try:
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(scores, f)
+    except OSError:
+        return False
+    return True
+
+
+def sync_scores(user, path, cloud):
+    """Merge a player's local scores with their cloud scores and keep the
+    result in both places. Returns (scores, synced). If the cloud isn't set
+    up or can't be reached, the local scores come back unchanged and synced
+    is False, so the game never depends on the network."""
+    local = load_scores(path)
+    if cloud is None or not cloud.enabled:
+        return local, False
+    merged = cloud.sync_scores(user, local)
+    if merged is None:
+        return local, False
+    merged = merged[:LEADERBOARD_SIZE]
+    write_scores(merged, path)
+    return merged, True
 
 
 # ---------------------------------------------------------------------------
@@ -1264,8 +1406,20 @@ def run_login(screen, clock, font, big_font):
         pygame.key.set_repeat()  # key repeat would break the game controls
 
 
-def play(screen, clock, font, big_font, user, sounds=None):
-    """Run the game for one signed-in player. Returns "logout" or "quit"."""
+def play(screen, clock, font, big_font, user, sounds=None, cloud=None):
+    """Run the game for one signed-in player. Returns "logout" or "quit".
+    cloud is a CloudSync; by default it is set up from the environment, and
+    it does nothing unless TETRIS_CLOUD_URL is set."""
+    music = Music()
+    try:
+        return _play(screen, clock, font, big_font, user, sounds, cloud, music)
+    finally:
+        music.stop()
+
+
+def _play(screen, clock, font, big_font, user, sounds, cloud, music):
+    if cloud is None:
+        cloud = CloudSync.from_env()
     pygame.display.set_caption(f"Tetris - {user}")
     score_file = scores_path(user)
     settings_file = settings_path(user)
@@ -1278,9 +1432,15 @@ def play(screen, clock, font, big_font, user, sounds=None):
     def save_prefs():
         save_settings({"theme": current_theme, "muted": sounds.muted}, settings_file)
 
+    def save_and_sync():
+        """Save the current run, then merge with the cloud if it's set up."""
+        save_score(game.score, score_file)
+        return sync_scores(user, score_file, cloud)
+
     game = Game()
     soft_dropping = False
     scores = None
+    synced = False
     highlight = None
 
     while True:
@@ -1292,7 +1452,7 @@ def play(screen, clock, font, big_font, user, sounds=None):
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if point_in_rect(event.pos, SIGN_OUT_BUTTON):
                     if scores is None:
-                        save_score(game.score, score_file)  # keep the current run
+                        save_and_sync()  # keep the current run
                     return "logout"
                 if game.state == "paused":
                     if point_in_rect(event.pos, PAUSE_BUTTONS["resume"]):
@@ -1301,7 +1461,7 @@ def play(screen, clock, font, big_font, user, sounds=None):
                         save_score(game.score, score_file)
                         game = Game()
                     elif point_in_rect(event.pos, PAUSE_BUTTONS["quit"]):
-                        save_score(game.score, score_file)
+                        save_and_sync()
                         return "quit"
                 elif game.state == "gameover":
                     if point_in_rect(event.pos, GAME_OVER_BUTTONS["restart"]):
@@ -1336,6 +1496,8 @@ def play(screen, clock, font, big_font, user, sounds=None):
                         game.hard_drop()
                     elif key == pygame.K_c:
                         game.hold()
+                    elif key == pygame.K_b:
+                        game.use_bomb()
                     elif key == pygame.K_DOWN:
                         soft_dropping = True
                 elif game.state == "paused":
@@ -1343,7 +1505,7 @@ def play(screen, clock, font, big_font, user, sounds=None):
                         save_score(game.score, score_file)
                         game = Game()
                     elif key == pygame.K_q:
-                        save_score(game.score, score_file)
+                        save_and_sync()
                         return "quit"
                 elif game.state == "gameover":
                     if key == pygame.K_r:
@@ -1363,9 +1525,10 @@ def play(screen, clock, font, big_font, user, sounds=None):
         for name in game.events:
             sounds.play(name)
         game.events.clear()
+        music.update(game.level, game.state, sounds.muted)
 
         if game.state == "gameover" and scores is None:
-            scores = save_score(game.score, score_file)
+            scores, synced = save_and_sync()
             highlight = scores.index(game.score) if game.score in scores else None
 
         screen.fill(WHITE)
@@ -1394,7 +1557,8 @@ def play(screen, clock, font, big_font, user, sounds=None):
                 draw_effects(screen, font, big_font, game)
             if game.state == "gameover":
                 draw_game_over(screen, big_font, font, game)
-                draw_leaderboard(screen, font, scores, highlight, title="YOUR HIGH SCORES")
+                title = "HIGH SCORES (CLOUD)" if synced else "YOUR HIGH SCORES"
+                draw_leaderboard(screen, font, scores, highlight, title=title)
 
         pygame.display.flip()
 
