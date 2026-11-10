@@ -92,7 +92,7 @@ The key is a shared password, so use `https` (for example behind a reverse proxy
 
 ## Tests
 
-`python3 -m unittest test_tetris_render test_tetris_auth test_tetris_features test_tetris_cloud test_tetris_extras`
+`python3 -m unittest test_tetris_render test_tetris_auth test_tetris_features test_tetris_cloud test_tetris_extras test_tetris_regression test_tetris_acceptance`
 
 # Feature Set
 

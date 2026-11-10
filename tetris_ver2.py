@@ -435,7 +435,9 @@ class Game:
 
     def move(self, dcol, drow):
         """Attempt to move the active piece; returns False and leaves it
-        unchanged if that would collide."""
+        unchanged if that would collide, or if the game isn't running."""
+        if self.state != "playing":
+            return False
         self.piece.col += dcol
         self.piece.row += drow
         if not self.board.is_valid(self.piece.cells()):
